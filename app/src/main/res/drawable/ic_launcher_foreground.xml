@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Sinusoidal Simulation Waveform in Glowing Cyan -->
+    <path
+        android:pathData="M18,72 Q28,48 38,72 T58,72 T78,72 T90,72"
+        android:strokeColor="#00D2FF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <!-- Schematic Resistor Symbol in Glowing Amber/Orange -->
+    <path
+        android:pathData="M15,45 L32,45 L37,30 L42,60 L47,30 L52,60 L57,30 L62,60 L67,45 L73,45 L88,45"
+        android:strokeColor="#FFC107"
+        android:strokeWidth="5.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <!-- Resistor Terminal Pins (Circles) -->
+    <path
+        android:pathData="M 15,45 m -4, 0 a 4,4 0 1,1 8,0 a 4,4 0 1,1 -8,0"
+        android:fillColor="#FFC107" />
+    <path
+        android:pathData="M 88,45 m -4, 0 a 4,4 0 1,1 8,0 a 4,4 0 1,1 -8,0"
+        android:fillColor="#FFC107" />
+
+    <!-- Elegant Integrated Signal Node Connection -->
+    <path
+        android:pathData="M50,45 L50,72"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M 50,45 m -2, 0 a 2,2 0 1,1 4,0 a 2,2 0 1,1 -4,0"
+        android:fillColor="#FFFFFF" />
+
+    <path
+        android:pathData="M 50,72 m -2, 0 a 2,2 0 1,1 4,0 a 2,2 0 1,1 -4,0"
+        android:fillColor="#FFFFFF" />
+
+</vector>

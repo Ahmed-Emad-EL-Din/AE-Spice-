@@ -1,0 +1,6 @@
+{
+  "name": "AE Spice",
+  "description": "High-performance LTspice-like analog circuit simulator featuring intuitive schematic capture, robust real-time SPICE MNA solver, and interactive multi-channel waveform visualization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
