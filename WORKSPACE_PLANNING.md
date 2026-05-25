@@ -13,3 +13,8 @@ The primary design goal for the AE Spice Studio workspace is to shift from a cra
 
 ## 4. State Persistence Map
 To preserve the custom layout across sessions, precise (x, y) coordinates of all floating elements will be captured upon gesture release (`onTouchEnd`). This spatial data will be serialized and stored via an Android local storage mechanism (e.g., DataStore or SharedPreferences). Upon app reboot, the UI engine will deserialize this data and restore the workspace to its exact prior state, ensuring layout persistence.
+
+## 5. Synchronized Boot & Stylized Branding Logo
+- **Atomic Initialization**: Prevent the main application UI tree (`SpiceAppUi`) from loading or laying out in parallel with the introduction sequence. A strict blocking binary state ensures the splash screen has complete dominance of the render tree. Following the completion of the introduction timer, the states are flipped, swapping the splash hierarchy out with the main workspace without memory leaks.
+- **Dynamic Identity Overlay**: Re-draw the typography of the branding logo dynamically. Rather than standard static glyph rendering, intercept the local text layout bounds. The character 'i' is represented as a dot-less glyph, and a custom light emitter golden-yellow circle is drawn atop using measured coordinates, ensuring typography consistency across different system-level font scales.
+

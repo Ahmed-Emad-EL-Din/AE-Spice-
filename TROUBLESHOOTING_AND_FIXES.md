@@ -11,3 +11,12 @@
 ## Problem 3: Multi-Touch Collision inside Graph Viewports
 - **The Problem**: Attempting to pinch-to-zoom on a waveform graph inadvertently triggered the global canvas zoom. This distorted the circuit schematic view behind the graph, leading to a frustrating user experience.
 - **The Fix**: We established isolated multi-touch gesture listeners restricted exclusively to the Wave Plotter bounds. When the graph area detects multi-touch engagement, the global canvas gesture recognizers are programmatically forced into a locked, passive state. This guarantees that pinch-to-zoom actions are accurately routed solely to the Wave Plotter.
+
+## Problem 4: Pre-Splash Main Workspace Bleed-Through
+- **The Problem**: Overlapping elements or race conditions during the initial render loop allowed part of the workspace schematic UI to flash or briefly become visible on secondary hardware threads before the splash sequence finished fading in.
+- **The Fix**: We replaced parallel render branches in `MainActivity` with a mutual exclusivity construct: `if (showSplash) { SplashScreen(...) } else { SpiceAppUi() }`. This guarantees that the schematic elements cannot compile layout nodes or load into the view tree in any state prior to explicit dismissal.
+
+## Problem 5: Font Scale & Letter Spacing Typography Offsets
+- **The Problem**: Hardcoding the pixel dimensions for the custom brand logo's golden-yellow dot caused clipping or misalignment on devices with heavy custom tracking, letters-spacings, or accessibility-increased system font scales.
+- **The Fix**: We solved this by using Jetpack Compose's `onTextLayout` with a dot-less base character `"spıce"`. We retrieve the exact bounding box of the target character index dynamically, calculate its coordinate offsets inside a `drawWithContent` canvas modifier, and automatically project the visual yellow circle overlay precisely relative to the glyph's physical pixel boundaries.
+
