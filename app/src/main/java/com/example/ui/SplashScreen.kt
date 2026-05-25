@@ -144,7 +144,10 @@ fun SplashScreen(
                                     val rect = layout.getBoundingBox(2)
                                     val dotRadius = 4.5.dp.toPx()
                                     val dotCenterX = rect.left + rect.width / 2f
-                                    val dotCenterY = rect.top - dotRadius - 4.dp.toPx()
+                                    // Calculate the physical top of the lowercase stem (x-height)
+                                    val stemTop = rect.top + rect.height * 0.34f
+                                    // Place the dot center 4dp above the top of the stem
+                                    val dotCenterY = stemTop - dotRadius - 4.dp.toPx()
                                     drawCircle(
                                         color = Color(0xFFFACC15), // Pure shining gold/yellow matching the 'A'
                                         radius = dotRadius,

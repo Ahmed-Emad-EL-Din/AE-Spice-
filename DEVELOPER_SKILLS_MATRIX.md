@@ -3,6 +3,7 @@
 ## 1. Core Competencies Required
 - **Advanced Pointer Input Handling**: Mastery of low-level Android gesture detection is essential. Developers must understand pointer tracking, multi-touch coordinate parsing, velocity calculations, and custom event interception/consumption to build fluid, conflict-free workspaces.
 - **Layout State Serialization**: Proficiency in converting complex UI layout structures (dimensions, coordinates, visibility) into lightweight, serializable data objects. This must be accomplished for local storage persistence seamlessly, without blocking the main UI thread during read/write lifecycles.
+- **High-Precision Typography Bounds & Offset Calculations**: Skill in intercepting raw layout metrics from Jetpack Compose's `TextLayoutResult` or Android's `StaticLayout`. Understanding character bounding boxes, multi-line offsets, baseline alignment, and deriving physical glyph positions (such as x-height and cap-height) to overlay pixel-perfect visual accents on text independent of system font sizes or user scaling boundaries.
 - **Dynamic Window & Viewport Management**: Expertise in custom layout viewport arithmetic. Developers must be capable of calculating collision boundaries, enforcing rendering guardrails, and managing dynamic multi-axis window positioning within restricted hardware screens.
 
 ## 2. Framework Alignment
