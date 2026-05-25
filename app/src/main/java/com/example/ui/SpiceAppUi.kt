@@ -1,17 +1,25 @@
 package com.example.ui
 
 import android.widget.Toast
+import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,21 +27,41 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import com.example.engine.*
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-@OptIn(ExperimentalMaterial3Api::class)
+enum class RightPanelType {
+    COMPONENTS,
+    SIM_COMMANDS,
+    GEMINI_AI
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SpiceAppUi() {
     val context = LocalContext.current
+
+    var activeRightPanel by remember { mutableStateOf<RightPanelType?>(null) }
+    var isPlotterExpanded by remember { mutableStateOf(false) }
+    var showPresetsMenu by remember { mutableStateOf(false) }
+    var showToolsMenu by remember { mutableStateOf(false) }
 
     // User session persistence & tracking state
     val sessionManager = remember { UserSessionManager(context) }
@@ -81,12 +109,165 @@ fun SpiceAppUi() {
     // UI selections
     var activeTool by remember { mutableStateOf(WorkspaceTool.SELECT) }
     var placingComponentType by remember { mutableStateOf(ComponentType.RESISTOR) }
+    var placingComponentValue by remember { mutableStateOf<String?>(null) }
+
+    val hotkeyMap = remember {
+        mutableStateMapOf<String, Pair<WorkspaceTool, String>>(
+            "R" to (WorkspaceTool.PLACE_COMPONENT to "RESISTOR"),
+            "C" to (WorkspaceTool.PLACE_COMPONENT to "CAPACITOR"),
+            "L" to (WorkspaceTool.PLACE_COMPONENT to "INDUCTOR"),
+            "D" to (WorkspaceTool.PLACE_COMPONENT to "DIODE"),
+            "G" to (WorkspaceTool.PLACE_COMPONENT to "GROUND"),
+            "V" to (WorkspaceTool.PLACE_COMPONENT to "VOLTAGE_SOURCE"),
+            "I" to (WorkspaceTool.PLACE_COMPONENT to "CURRENT_SOURCE"),
+            "M" to (WorkspaceTool.PLACE_COMPONENT to "MOSFET_N"),
+            "Q" to (WorkspaceTool.PLACE_COMPONENT to "TRANSISTOR_NPN"),
+            "O" to (WorkspaceTool.PLACE_COMPONENT to "OPAMP"),
+            "W" to (WorkspaceTool.DRAW_WIRE to ""),
+            "E" to (WorkspaceTool.ERASE to ""),
+            "P" to (WorkspaceTool.PROBE to ""),
+            "S" to (WorkspaceTool.SELECT to "")
+        )
+    }
     
     // Dialogs
     var showPropertiesDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showImportExportDialog by remember { mutableStateOf(false) }
+
+    // Open Tabs & workspace states
+    val openTabs = remember { mutableStateListOf<WorkspaceTab>() }
+    var activeTabId by remember { mutableStateOf<String?>(null) }
+    var reorderMenuTabId by remember { mutableStateOf<String?>(null) }
+
+    val sharedPrefs = remember { context.getSharedPreferences("circuit_file_prefs", android.content.Context.MODE_PRIVATE) }
+    val lastFolderKey = "last_saved_folder_path"
+    var currentFolderFile by remember {
+        val circuitsDir = java.io.File(context.filesDir, "circuits")
+        if (!circuitsDir.exists()) {
+            circuitsDir.mkdirs()
+        }
+        val lastPath = sharedPrefs.getString(lastFolderKey, null)
+        val initialDir = if (lastPath != null) java.io.File(lastPath) else circuitsDir
+        mutableStateOf(if (initialDir.exists()) initialDir else circuitsDir)
+    }
+
+    var showSaveAsDialog by remember { mutableStateOf(false) }
+    var showOpenDialog by remember { mutableStateOf(false) }
+    var showFileMenu by remember { mutableStateOf(false) }
+
+    // Multi-select persistence variables
+    val multiSelectedComponents = remember { mutableStateListOf<Component>() }
+    var isMultiSelectMode by remember { mutableStateOf(false) }
+    var showMultiSelectActions by remember { mutableStateOf(false) }
+
+    val clipboardComponents = remember { mutableStateListOf<Component>() }
+    val clipboardWires = remember { mutableStateListOf<Wire>() }
+
+    fun syncCurrentCanvasToActiveTab() {
+        activeTabId?.let { tabId ->
+            val idx = openTabs.indexOfFirst { it.id == tabId }
+            if (idx != -1) {
+                openTabs[idx] = openTabs[idx].copy(
+                    components = components.toList(),
+                    wires = wires.toList()
+                )
+            }
+        }
+    }
+
+    fun selectTab(tabId: String) {
+        syncCurrentCanvasToActiveTab()
+        val targetIdx = openTabs.indexOfFirst { it.id == tabId }
+        if (targetIdx != -1) {
+            val targetTab = openTabs[targetIdx]
+            components.clear()
+            components.addAll(targetTab.components)
+            wires.clear()
+            wires.addAll(targetTab.wires)
+            selectedComponent = null
+            activeTabId = tabId
+            
+            // Clear multi select when switching tabs
+            multiSelectedComponents.clear()
+            isMultiSelectMode = false
+            showMultiSelectActions = false
+        }
+    }
+
+    fun exportToSchemaString(): String {
+        val sb = StringBuilder()
+        sb.append("{\n  \"components\": [\n")
+        components.forEachIndexed { i, c ->
+            sb.append("    {\"id\": \"${c.id}\", \"type\": \"${c.type.name}\", \"name\": \"${c.name}\", \"valueStr\": \"${c.valueStr}\", \"gridX\": ${c.gridX}, \"gridY\": ${c.gridY}, \"orientation\": \"${c.orientation.name}\"}")
+            if (i < components.size - 1) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ],\n  \"wires\": [\n")
+        wires.forEachIndexed { i, w ->
+            sb.append("    {\"startX\": ${w.start.x}, \"startY\": ${w.start.y}, \"endX\": ${w.end.x}, \"endY\": ${w.end.y}}")
+            if (i < wires.size - 1) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ]\n}")
+        return sb.toString()
+    }
+
+    fun parseJsonSchemaDirectly(json: String): Pair<List<Component>, List<Wire>> {
+        val parsedComps = mutableListOf<Component>()
+        val parsedWires = mutableListOf<Wire>()
+        val compRegex = """\{"id":\s*"([^"]+)",\s*"type":\s*"([^"]+)",\s*"name":\s*"([^"]+)",\s*"valueStr":\s*"([^"]+)",\s*"gridX":\s*(-?\d+),\s*"gridY":\s*(-?\d+),\s*"orientation":\s*"([^"]+)"\}""".toRegex()
+        val wireRegex = """\{"startX":\s*(-?\d+),\s*"startY":\s*(-?\d+),\s*"endX":\s*(-?\d+),\s*"endY":\s*(-?\d+)\}""".toRegex()
+        
+        compRegex.findAll(json).forEach { match ->
+            val (id, typeStr, name, valStr, xStr, yStr, orientStr) = match.destructured
+            val type = ComponentType.valueOf(typeStr)
+            val orient = Orientation.valueOf(orientStr)
+            parsedComps.add(Component(id, type, name, valStr, xStr.toInt(), yStr.toInt(), orient))
+        }
+        
+        wireRegex.findAll(json).forEachIndexed { index, match ->
+            val (sX, sY, eX, eY) = match.destructured
+            parsedWires.add(Wire("W_import_${System.currentTimeMillis()}_$index", GridPoint(sX.toInt(), sY.toInt()), GridPoint(eX.toInt(), eY.toInt())))
+        }
+        return Pair(parsedComps, parsedWires)
+    }
+
+    fun handleCreateNew() {
+        syncCurrentCanvasToActiveTab()
+        components.clear()
+        wires.clear()
+        val newTab = WorkspaceTab(
+            id = java.util.UUID.randomUUID().toString(),
+            name = "untitled_${openTabs.size + 1}.json",
+            file = null,
+            components = emptyList(),
+            wires = emptyList()
+        )
+        openTabs.add(newTab)
+        activeTabId = newTab.id
+        Toast.makeText(context, "Created empty canvas", Toast.LENGTH_SHORT).show()
+    }
+
+    fun handleSave() {
+        syncCurrentCanvasToActiveTab()
+        val activeIdx = openTabs.indexOfFirst { it.id == activeTabId }
+        if (activeIdx == -1) return
+        val tab = openTabs[activeIdx]
+        if (tab.file != null) {
+            try {
+                val json = exportToSchemaString()
+                tab.file.writeText(json)
+                Toast.makeText(context, "Saved successfully", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Error saving: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            showSaveAsDialog = true
+        }
+    }
     var showSubcircuitDialog by remember { mutableStateOf(false) }
+    var showHotkeyOverlay by remember { mutableStateOf(false) }
 
     // Backup text fields
     var importText by remember { mutableStateOf("") }
@@ -106,7 +287,20 @@ fun SpiceAppUi() {
 
     // Let's create an initial RC circuit on startup so the app isn't blank
     LaunchedEffect(Unit) {
-        loadRCTemplate(components, wires)
+        if (openTabs.isEmpty()) {
+            components.clear()
+            wires.clear()
+            loadRCTemplate(components, wires)
+            val initialTab = WorkspaceTab(
+                id = java.util.UUID.randomUUID().toString(),
+                name = "RC_Filter.json",
+                file = null,
+                components = components.toList(),
+                wires = wires.toList()
+            )
+            openTabs.add(initialTab)
+            activeTabId = initialTab.id
+        }
     }
 
     // Interactive probe resolver mapping clicked coordinate to SPICE node IDs
@@ -194,24 +388,6 @@ fun SpiceAppUi() {
                 Toast.makeText(context, "No active node mapped at coordinates $coordsStr", Toast.LENGTH_SHORT).show()
             }
         }
-    }
-
-    fun exportToSchemaString(): String {
-        val sb = StringBuilder()
-        sb.append("{\n  \"components\": [\n")
-        components.forEachIndexed { i, c ->
-            sb.append("    {\"id\": \"${c.id}\", \"type\": \"${c.type.name}\", \"name\": \"${c.name}\", \"valueStr\": \"${c.valueStr}\", \"gridX\": ${c.gridX}, \"gridY\": ${c.gridY}, \"orientation\": \"${c.orientation.name}\"}")
-            if (i < components.size - 1) sb.append(",")
-            sb.append("\n")
-        }
-        sb.append("  ],\n  \"wires\": [\n")
-        wires.forEachIndexed { i, w ->
-            sb.append("    {\"startX\": ${w.start.x}, \"startY\": ${w.start.y}, \"endX\": ${w.end.x}, \"endY\": ${w.end.y}}")
-            if (i < wires.size - 1) sb.append(",")
-            sb.append("\n")
-        }
-        sb.append("  ]\n}")
-        return sb.toString()
     }
 
     fun importFromSchemaString(json: String) {
@@ -326,6 +502,28 @@ fun SpiceAppUi() {
         }
     }
 
+    // Fast, silent simulation execution for real-time slider updates
+    fun runSpiceSimulationQuietly() {
+        val componentsSnapshot = components.toList()
+        val wiresSnapshot = wires.toList()
+        val settingsSnapshot = simSettings.copy()
+
+        scope.launch {
+            try {
+                val result = withContext(Dispatchers.Default) {
+                    val solver = SpiceSolver()
+                    solver.simulate(componentsSnapshot, wiresSnapshot, settingsSnapshot)
+                }
+                if (result.timePoints.isNotEmpty()) {
+                    simResult = result
+                    runError = null
+                }
+            } catch (e: Exception) {
+                // Quietly bypass intermediate solver singularities
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -335,15 +533,113 @@ fun SpiceAppUi() {
                             imageVector = Icons.Default.Info,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(24.dp)
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             "AE Spice Studio",
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.SansSerif,
-                            letterSpacing = 1.sp
+                            letterSpacing = 0.5.sp,
+                            fontSize = 18.sp
                         )
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        // Presets Dropdown
+                        Box {
+                            TextButton(
+                                onClick = { showPresetsMenu = true },
+                                modifier = Modifier.testTag("nav_presets_btn")
+                            ) {
+                                Text("Presets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                            DropdownMenu(
+                                expanded = showPresetsMenu,
+                                onDismissRequest = { showPresetsMenu = false },
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp))
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("RC Charging Preset", fontSize = 13.sp) },
+                                    onClick = {
+                                        showPresetsMenu = false
+                                        selectedComponent = null
+                                        simResult = null
+                                        components.clear()
+                                        wires.clear()
+                                        loadRCTemplate(components, wires)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Diode Rectification Preset", fontSize = 13.sp) },
+                                    onClick = {
+                                        showPresetsMenu = false
+                                        selectedComponent = null
+                                        simResult = null
+                                        components.clear()
+                                        wires.clear()
+                                        loadRectifierTemplate(components, wires)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("RLC Bandpass Preset", fontSize = 13.sp) },
+                                    onClick = {
+                                        showPresetsMenu = false
+                                        selectedComponent = null
+                                        simResult = null
+                                        components.clear()
+                                        wires.clear()
+                                        loadRLCTemplate(components, wires)
+                                    }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(8.dp))
+
+                        // File / IC Tools Dropdown
+                        Box {
+                            TextButton(
+                                onClick = { showToolsMenu = true },
+                                modifier = Modifier.testTag("nav_tools_btn")
+                            ) {
+                                Text("IC / File", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                            DropdownMenu(
+                                expanded = showToolsMenu,
+                                onDismissRequest = { showToolsMenu = false },
+                                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp))
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Import Blueprint", fontSize = 13.sp) },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        importText = ""
+                                        showImportExportDialog = true
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Export Blueprint", fontSize = 13.sp) },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        importText = exportToSchemaString()
+                                        showImportExportDialog = true
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Build Reusable IC", fontSize = 13.sp) },
+                                    onClick = {
+                                        showToolsMenu = false
+                                        subcircuitNameInput = "MY_IC_${(10..99).random()}"
+                                        showSubcircuitDialog = true
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                )
+                            }
+                        }
                     }
                 },
                 actions = {
@@ -384,31 +680,6 @@ fun SpiceAppUi() {
                         Icon(Icons.Default.Refresh, contentDescription = "Undo", tint = Color.LightGray)
                     }
 
-                    // Create reusable modular IC Template
-                    OutlinedButton(
-                        onClick = { showSubcircuitDialog = true },
-                        modifier = Modifier.padding(end = 6.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                    ) {
-                        Icon(Icons.Default.AddCircle, contentDescription = "Create IC", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Create IC", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-
-                    // Import / Export JSON Schema blueprints
-                    OutlinedButton(
-                        onClick = {
-                            importText = exportToSchemaString()
-                            showImportExportDialog = true
-                        },
-                        modifier = Modifier.padding(end = 8.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = "Import/Export blueprints", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("I/O", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                    }
-
                     // Run simulation fab
                     Button(
                         onClick = { runSpiceSimulation() },
@@ -416,7 +687,7 @@ fun SpiceAppUi() {
                             containerColor = Color(0xFFD1E4FF), // Elegant Dark Primary Accent Blue
                             contentColor = Color(0xFF00315C) // Contrast dark blue
                         ),
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier.padding(end = 4.dp).testTag("run_simulation_btn")
                     ) {
                         if (isSimulating) {
                             CircularProgressIndicator(
@@ -428,6 +699,59 @@ fun SpiceAppUi() {
                             Icon(Icons.Default.PlayArrow, contentDescription = "Run")
                             Spacer(modifier = Modifier.width(4.dp))
                             Text("RUN", fontWeight = FontWeight.Bold)
+                        }
+                    }
+
+                    // 3-dots button on the right to run button
+                    Box {
+                        IconButton(
+                            onClick = { showFileMenu = true },
+                            modifier = Modifier.padding(end = 8.dp).testTag("three_dots_file_menu_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "File Actions Menu",
+                                tint = Color.White
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showFileMenu,
+                            onDismissRequest = { showFileMenu = false },
+                            modifier = Modifier.background(Color(0xFF202124))
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Create New", color = Color.White) },
+                                onClick = {
+                                    showFileMenu = false
+                                    handleCreateNew()
+                                },
+                                leadingIcon = { Icon(Icons.Default.Add, contentDescription = "New", tint = Color.LightGray) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Open System File...", color = Color.White) },
+                                onClick = {
+                                    showFileMenu = false
+                                    showOpenDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.List, contentDescription = "Open", tint = Color.LightGray) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Save Schematic", color = Color.White) },
+                                onClick = {
+                                    showFileMenu = false
+                                    handleSave()
+                                },
+                                leadingIcon = { Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Save", tint = Color.LightGray) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Save As...", color = Color.White) },
+                                onClick = {
+                                    showFileMenu = false
+                                    showSaveAsDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = "Save As", tint = Color.LightGray) }
+                            )
                         }
                     }
                 },
@@ -442,73 +766,250 @@ fun SpiceAppUi() {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            val isTablet = maxWidth > 840.dp
-            
-            if (isTablet) {
-                // --- TABLET MASTER-DETAIL DOCK LAYOUT ---
-                Row(modifier = Modifier.fillMaxSize()) {
-                    // Left Workspace editor (60% width)
-                    Box(modifier = Modifier.weight(1.3f).fillMaxHeight()) {
-                        SchematicWorkspace(
-                            components = components,
-                            wires = wires,
-                            selectedComponent = selectedComponent,
-                            activeTool = activeTool,
-                            placingType = placingComponentType,
-                            simResult = simResult,
-                            onSelectComponent = { selectedComponent = it },
-                            onAddComponent = { pushUndoState(); components.add(it) },
-                            onAddWire = { pushUndoState(); wires.add(it) },
-                            onDeleteComponent = { pushUndoState(); components.remove(it) },
-                            onDeleteWire = { pushUndoState(); wires.remove(it) },
-                            onProbeNode = { handleProbeTapped(it) }
-                        )
-                    }
+            val widthPx = constraints.maxWidth
+            val heightPx = constraints.maxHeight
 
-                    VerticalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
+            // 1. GLOBAL VIEWPORT EXPANSION: Fills 100% width and height
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+            ) {
+                SchematicWorkspace(
+                    components = components,
+                    wires = wires,
+                    selectedComponent = selectedComponent,
+                    activeTool = activeTool,
+                    placingType = placingComponentType,
+                    simResult = simResult,
+                    onSelectComponent = { selectedComponent = it },
+                    onAddComponent = { pushUndoState(); components.add(it) },
+                    onAddWire = { pushUndoState(); wires.add(it) },
+                    onDeleteComponent = { pushUndoState(); components.remove(it) },
+                    onDeleteWire = { pushUndoState(); wires.remove(it) },
+                    onProbeNode = { handleProbeTapped(it) },
+                    onUpdateComponent = { oldComp, newComp ->
+                        val idx = components.indexOfFirst { it.id == oldComp.id }
+                        if (idx != -1) {
+                            pushUndoState()
+                            components[idx] = newComp
+                            if (selectedComponent?.id == newComp.id) {
+                                selectedComponent = newComp
+                            }
+                        }
+                    },
+                    onDoubleTapComponent = {
+                        selectedComponent = it
+                        showPropertiesDialog = true
+                    },
+                    onCanvasClick = {
+                        // Smart Dismiss empty workspace click:
+                        activeRightPanel = null
+                    },
+                    placingValue = placingComponentValue,
+                    modifier = Modifier.fillMaxSize(),
+                    multiSelectedComponents = multiSelectedComponents,
+                    isMultiSelectMode = isMultiSelectMode,
+                    onMultiSelectModeChange = { 
+                        isMultiSelectMode = it
+                        if (it) {
+                            selectedComponent = null
+                        }
+                    },
+                    showMultiSelectActions = showMultiSelectActions,
+                    onShowMultiSelectActionsChange = { showMultiSelectActions = it },
+                    clipboardComponents = clipboardComponents,
+                    clipboardWires = clipboardWires,
+                    onPushHistoryState = { pushUndoState() }
+                )
+            }
 
-                    // Right diagnostics / controls column
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .background(MaterialTheme.colorScheme.background)
-                    ) {
-                        // Diagnostics template presets
-                        TemplatesBar(
-                            onLoadTemplate = { name ->
-                                selectedComponent = null
-                                simResult = null
-                                components.clear()
-                                wires.clear()
-                                when (name) {
-                                    "RC" -> loadRCTemplate(components, wires)
-                                    "Rectifier" -> loadRectifierTemplate(components, wires)
-                                    "RLC" -> loadRLCTemplate(components, wires)
+            // 2. FLOATING MODE TOOLBAR
+            // Floats elegantly at the top center of the canvas area, completely responsive and clean.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // --- HORIZONTAL OPEN FILES VIEW ---
+                    if (openTabs.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            openTabs.forEachIndexed { index, tab ->
+                                val isActive = activeTabId == tab.id
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    elevation = CardDefaults.cardElevation(if (isActive) 6.dp else 2.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isActive) Color(0xFF00315C) else Color(0xFF2D3135)
+                                    ),
+                                    border = BorderStroke(
+                                        width = 1.dp,
+                                        color = if (isActive) Color(0xFFD1E4FF) else Color.Transparent
+                                    ),
+                                    modifier = Modifier
+                                        .combinedClickable(
+                                            onClick = {
+                                                selectTab(tab.id)
+                                            },
+                                            onLongClick = {
+                                                reorderMenuTabId = tab.id
+                                            }
+                                        )
+                                        .testTag("tab_item_${tab.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = "File scheme indicator icon",
+                                            tint = if (isActive) Color(0xFFD1E4FF) else Color.LightGray,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = tab.name,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isActive) Color.White else Color.LightGray,
+                                            fontSize = 11.sp
+                                        )
+                                        IconButton(
+                                            onClick = {
+                                                // Close tab trigger
+                                                syncCurrentCanvasToActiveTab()
+                                                val tabIdx = openTabs.indexOfFirst { it.id == tab.id }
+                                                if (tabIdx != -1) {
+                                                    val closingActive = activeTabId == tab.id
+                                                    openTabs.removeAt(tabIdx)
+                                                    if (openTabs.isEmpty()) {
+                                                        // Fallback creation
+                                                        val fallback = WorkspaceTab(
+                                                            id = java.util.UUID.randomUUID().toString(),
+                                                            name = "Untitled.json",
+                                                            file = null,
+                                                            components = emptyList(),
+                                                            wires = emptyList()
+                                                        )
+                                                        openTabs.add(fallback)
+                                                        activeTabId = fallback.id
+                                                        components.clear()
+                                                        wires.clear()
+                                                    } else if (closingActive) {
+                                                        val nextActiveIdx = tabIdx.coerceAtMost(openTabs.size - 1)
+                                                        selectTab(openTabs[nextActiveIdx].id)
+                                                    }
+                                                }
+                                            },
+                                            modifier = Modifier.size(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Close File Scheme Tab",
+                                                tint = Color.Gray,
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
-                        )
+                        }
+                    }
 
-                        SchematicFileBar(
-                            onImportClick = {
-                                importText = ""
-                                showImportExportDialog = true
-                            },
-                            onExportClick = {
-                                importText = exportToSchemaString()
-                                showImportExportDialog = true
-                            },
-                            onRegisterSubcircuitClick = {
-                                subcircuitNameInput = "MY_IC_${(10..99).random()}"
-                                showSubcircuitDialog = true
-                            }
-                        )
+                    // Reorder popover dialog overlay
+                    reorderMenuTabId?.let { tabId ->
+                        val targetIdx = openTabs.indexOfFirst { it.id == tabId }
+                        if (targetIdx != -1) {
+                            val targetTab = openTabs[targetIdx]
+                            AlertDialog(
+                                onDismissRequest = { reorderMenuTabId = null },
+                                title = { Text("Organize Tab: ${targetTab.name}") },
+                                text = {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        TextButton(
+                                            onClick = {
+                                                openTabs.removeAt(targetIdx)
+                                                openTabs.add(0, targetTab)
+                                                reorderMenuTabId = null
+                                            },
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move to First")
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Move to First Position", textAlign = TextAlign.Start, modifier = Modifier.fillMaxWidth())
+                                        }
 
-                        // Mode Selector / Toolbar
+                                        TextButton(
+                                            onClick = {
+                                                if (targetIdx > 0) {
+                                                    openTabs.removeAt(targetIdx)
+                                                    openTabs.add(targetIdx - 1, targetTab)
+                                                }
+                                                reorderMenuTabId = null
+                                            },
+                                            enabled = targetIdx > 0,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Move Left")
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Move Left (Forward)", textAlign = TextAlign.Start, modifier = Modifier.fillMaxWidth())
+                                        }
+
+                                        TextButton(
+                                            onClick = {
+                                                if (targetIdx < openTabs.size - 1) {
+                                                    openTabs.removeAt(targetIdx)
+                                                    openTabs.add(targetIdx + 1, targetTab)
+                                                }
+                                                reorderMenuTabId = null
+                                            },
+                                            enabled = targetIdx < openTabs.size - 1,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Move Right")
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Move Right (Backward)", textAlign = TextAlign.Start, modifier = Modifier.fillMaxWidth())
+                                        }
+                                    }
+                                },
+                                confirmButton = {
+                                    TextButton(onClick = { reorderMenuTabId = null }) {
+                                        Text("Done")
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        elevation = CardDefaults.cardElevation(8.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(4.dp)),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .wrapContentWidth()
+                            .padding(horizontal = 16.dp)
+                            .testTag("floating_mode_toolbar")
+                    ) {
                         ModeToolbar(
                             activeTool = activeTool,
                             onToolChange = { activeTool = it },
-                            selectedComponent = selectedComponent,
+                            selectedComponent = if (isMultiSelectMode) null else selectedComponent,
                             onRotate = {
                                 selectedComponent?.let { comp ->
                                     pushUndoState()
@@ -520,6 +1021,7 @@ fun SpiceAppUi() {
                                     if (cIndex != -1) {
                                         components[cIndex] = comp.copy(orientation = nextRot)
                                         selectedComponent = components[cIndex]
+                                        runSpiceSimulationQuietly()
                                     }
                                 }
                             },
@@ -528,6 +1030,7 @@ fun SpiceAppUi() {
                                     pushUndoState()
                                     components.remove(comp)
                                     selectedComponent = null
+                                    runSpiceSimulationQuietly()
                                 }
                             },
                             onEdit = { showPropertiesDialog = true },
@@ -535,70 +1038,161 @@ fun SpiceAppUi() {
                             onRedo = { redo() },
                             canUndo = undoStack.isNotEmpty(),
                             canRedo = redoStack.isNotEmpty(),
-                            onCopy = { duplicateSelectedComponent() }
+                            onCopy = { duplicateSelectedComponent() },
+                            onHotkeyClick = { showHotkeyOverlay = true }
                         )
+                    }
+                }
+            }
 
-                        Divider()
+            // 3. COLLAPSIBLE RIGHT UTILITY DOCK CONTAINER
+            // Features a pinned vertical dock (icon strip) and a beautiful spring-animated fly-out drawer.
+            
+            // Pinned dock bar
+            Card(
+                shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp),
+                elevation = CardDefaults.cardElevation(6.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(56.dp)
+                    .wrapContentHeight()
+            ) {
+                Column(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Catalog / Components Toggle Icon Button
+                    IconButton(
+                        onClick = {
+                            activeRightPanel = if (activeRightPanel == RightPanelType.COMPONENTS) null else RightPanelType.COMPONENTS
+                        },
+                        modifier = Modifier.testTag("dock_components_btn"),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = if (activeRightPanel == RightPanelType.COMPONENTS) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Build,
+                            contentDescription = "Components Box List",
+                            tint = if (activeRightPanel == RightPanelType.COMPONENTS) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
 
-                        // Component / Controls selector tabs
-                        TabRow(selectedTabIndex = bottomTabState) {
-                            Tab(selected = bottomTabState == 0, onClick = { bottomTabState = 0 }) {
-                                Text("Wave Plotter", modifier = Modifier.padding(12.dp), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Tab(selected = bottomTabState == 1, onClick = { bottomTabState = 1 }) {
-                                Text("Components", modifier = Modifier.padding(12.dp), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Tab(selected = bottomTabState == 2, onClick = { bottomTabState = 2 }) {
-                                Text("Sim Commands", modifier = Modifier.padding(12.dp), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                            }
-                            Tab(selected = bottomTabState == 3, onClick = { bottomTabState = 3 }) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = if (bottomTabState == 3) Color(0xFFFBBC05) else Color.Gray,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Gemini AI", modifier = Modifier.padding(12.dp), fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                }
+                    // Simulation Commands / Settings Toggle Icon Button
+                    IconButton(
+                        onClick = {
+                            activeRightPanel = if (activeRightPanel == RightPanelType.SIM_COMMANDS) null else RightPanelType.SIM_COMMANDS
+                        },
+                        modifier = Modifier.testTag("dock_sim_commands_btn"),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = if (activeRightPanel == RightPanelType.SIM_COMMANDS) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Simulation Parameters Control",
+                            tint = if (activeRightPanel == RightPanelType.SIM_COMMANDS) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    // Gemini Intelligent Copilot Toggle Icon Button
+                    IconButton(
+                        onClick = {
+                            activeRightPanel = if (activeRightPanel == RightPanelType.GEMINI_AI) null else RightPanelType.GEMINI_AI
+                        },
+                        modifier = Modifier.testTag("dock_gemini_ai_btn"),
+                        colors = IconButtonDefaults.iconButtonColors(
+                            containerColor = if (activeRightPanel == RightPanelType.GEMINI_AI) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Star,
+                            contentDescription = "Gemini Intelligent Assistant",
+                            tint = if (activeRightPanel == RightPanelType.GEMINI_AI) Color(0xFFFBBC05) else MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            }
+
+            // Slide-Out Panel Content
+            val density = LocalDensity.current
+            
+            val initialWaveformBtnPos = remember(widthPx, heightPx) {
+                val btnWidthPx = with(density) { 120.dp.toPx() }
+                val btnHeightPx = with(density) { 48.dp.toPx() }
+                Offset(
+                    x = (widthPx - btnWidthPx) / 2f,
+                    y = heightPx - btnHeightPx - with(density) { 16.dp.toPx() }
+                )
+            }
+
+            var waveformBtnPos by remember { mutableStateOf(initialWaveformBtnPos) }
+
+            if (activeRightPanel != null) {
+                val initialDockPanelPos = remember(widthPx, heightPx) {
+                    val paddingX = with(density) { 16.dp.toPx() }
+                    val paddingY = with(density) { 80.dp.toPx() }
+                    Offset(paddingX, paddingY)
+                }
+                DraggableFloatingWindow(
+                    windowId = "right_panel_v2_${activeRightPanel?.name}",
+                    initialPosition = initialDockPanelPos,
+                    containerSize = IntSize(widthPx.toInt(), heightPx.toInt()),
+                    modifier = Modifier.width(360.dp).height(500.dp),
+                    headerContent = {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp))
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = when (activeRightPanel) {
+                                    RightPanelType.COMPONENTS -> "Components"
+                                    RightPanelType.SIM_COMMANDS -> "Simulation Command Setup"
+                                    RightPanelType.GEMINI_AI -> "Gemini Circuit Advisor"
+                                    else -> ""
+                                },
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontSize = 14.sp
+                            )
+                            IconButton(onClick = { activeRightPanel = null }) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close Panel",
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                         }
-
-                        Box(modifier = Modifier.weight(1f)) {
-                            when (bottomTabState) {
-                                0 -> {
-                                    // Plotter display
-                                    if (runError != null) {
-                                        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-                                            Text(runError!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                                        }
-                                    } else {
-                                        WaveformViewer(
-                                            result = simResult ?: SimResult(emptyList(), "Time", emptyMap(), emptyMap()),
-                                            probedNodeToActivate = probedNodeToActivate,
-                                            onSelectNodeFromChart = { probedNodeToActivate = null }
-                                        )
-                                    }
-                                }
-                                1 -> {
-                                    // Catalog components list
+                    }
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            when (activeRightPanel) {
+                                RightPanelType.COMPONENTS -> {
                                     ComponentCatalog(
                                         selectedType = placingComponentType,
                                         onSelectType = {
                                             placingComponentType = it
                                             activeTool = WorkspaceTool.PLACE_COMPONENT
+                                            activeRightPanel = null
                                         }
                                     )
                                 }
-                                2 -> {
-                                    // Settings config
+                                RightPanelType.SIM_COMMANDS -> {
                                     SimulationSettingsControl(
                                         settings = simSettings,
                                         onSettingsChange = { simSettings = it }
                                     )
                                 }
-                                3 -> {
+                                RightPanelType.GEMINI_AI -> {
                                     GeminiChatPanel(
                                         components = components,
                                         wires = wires,
@@ -630,212 +1224,271 @@ fun SpiceAppUi() {
                                         sessionManager = sessionManager
                                     )
                                 }
+                                null -> {}
                             }
                         }
                     }
                 }
-            } else {
-                // --- PHONE ADAPTIVE LAYOUT (TOP / BOTTOM COEXIST) ---
-                Column(modifier = Modifier.fillMaxSize()) {
-                    // Top 45% workspace
-                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        SchematicWorkspace(
-                            components = components,
-                            wires = wires,
-                            selectedComponent = selectedComponent,
-                            activeTool = activeTool,
-                            placingType = placingComponentType,
-                            simResult = simResult,
-                            onSelectComponent = { selectedComponent = it },
-                            onAddComponent = { pushUndoState(); components.add(it) },
-                            onAddWire = { pushUndoState(); wires.add(it) },
-                            onDeleteComponent = { pushUndoState(); components.remove(it) },
-                            onDeleteWire = { pushUndoState(); wires.remove(it) },
-                            onProbeNode = { handleProbeTapped(it) }
-                        )
+            }
 
-                        // Floating auxiliary template preset trigger
+            // 4. FLOATING WAVEFORM BUTTON & PLOTTER WINDOW
+            
+            if (!isPlotterExpanded) {
+                DraggableFloatingWindow(
+                    windowId = "waveform_trigger_btn_v2",
+                    initialPosition = initialWaveformBtnPos,
+                    containerSize = IntSize(widthPx.toInt(), heightPx.toInt()),
+                    draggableBody = true,
+                    onPositionChanged = { waveformBtnPos = it },
+                    modifier = Modifier.wrapContentSize(),
+                    headerContent = null
+                ) {
+                    Card(
+                        onClick = { isPlotterExpanded = true },
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                        shape = RoundedCornerShape(12.dp),
+                        elevation = CardDefaults.cardElevation(8.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            IconButton(
-                                onClick = {
-                                    components.clear()
-                                    wires.clear()
-                                    simResult = null
-                                    loadRCTemplate(components, wires)
-                                },
-                                colors = IconButtonDefaults.iconButtonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Load RC Example", tint = MaterialTheme.colorScheme.primary)
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Info, // A wave-like placeholder or info symbol
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Waveform",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
                         }
                     }
+                }
+            }
 
-                    HorizontalDivider(thickness = 1.dp, color = MaterialTheme.colorScheme.outlineVariant)
-
-                    // Bottom diagnostics detail column (55% height)
-                    Column(
-                        modifier = Modifier
-                            .weight(1.3f)
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.background)
-                    ) {
-                        // Miniature dynamic toolbar
-                        ModeToolbar(
-                            activeTool = activeTool,
-                            onToolChange = { activeTool = it },
-                            selectedComponent = selectedComponent,
-                            onRotate = {
-                                selectedComponent?.let { comp ->
-                                    pushUndoState()
-                                    val currentRot = comp.orientation
-                                    val idx = (Orientation.values().indexOf(currentRot) + 1) % Orientation.values().size
-                                    val nextRot = Orientation.values()[idx]
-                                    
-                                    val cIndex = components.indexOfFirst { it.id == comp.id }
-                                    if (cIndex != -1) {
-                                        components[cIndex] = comp.copy(orientation = nextRot)
-                                        selectedComponent = components[cIndex]
-                                    }
-                                }
-                            },
-                            onDelete = {
-                                selectedComponent?.let { comp ->
-                                    pushUndoState()
-                                    components.remove(comp)
-                                    selectedComponent = null
-                                }
-                            },
-                            onEdit = { showPropertiesDialog = true },
-                            onUndo = { undo() },
-                            onRedo = { redo() },
-                            canUndo = undoStack.isNotEmpty(),
-                            canRedo = redoStack.isNotEmpty(),
-                            onCopy = { duplicateSelectedComponent() }
-                        )
-
-                        Divider()
-
-                        // Action selectors tabs for phone
-                        TabRow(selectedTabIndex = bottomTabState) {
-                            Tab(selected = bottomTabState == 0, onClick = { bottomTabState = 0 }) {
-                                Text("Wave Viewer", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(10.dp))
-                            }
-                            Tab(selected = bottomTabState == 1, onClick = { bottomTabState = 1 }) {
-                                Text("Add Parts", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(10.dp))
-                            }
-                            Tab(selected = bottomTabState == 2, onClick = { bottomTabState = 2 }) {
-                                Text("Command Run", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(10.dp))
-                            }
-                            Tab(selected = bottomTabState == 3, onClick = { bottomTabState = 3 }) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = null,
-                                        tint = if (bottomTabState == 3) Color(0xFFFBBC05) else Color.Gray,
-                                        modifier = Modifier.size(12.dp)
+            if (isPlotterExpanded) {
+                val initialPlotterPos = remember(widthPx, heightPx) {
+                    val plotterHeightPx = with(density) { 380.dp.toPx() }
+                    Offset(0f, heightPx - plotterHeightPx)
+                }
+                DraggableFloatingWindow(
+                    windowId = "wave_plotter_window_v2",
+                    initialPosition = initialPlotterPos,
+                    containerSize = IntSize(widthPx.toInt(), heightPx.toInt()),
+                    modifier = Modifier.fillMaxWidth().height(380.dp),
+                    headerContent = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surfaceColorAtElevation(1.dp))
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                // Little aesthetic pill grab handle
+                                Box(
+                                    modifier = Modifier
+                                        .width(44.dp)
+                                        .height(4.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Gray.copy(alpha = 0.5f))
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Waveform",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("Gemini AI", fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(10.dp))
-                                }
-                            }
-                        }
-
-                        // Load templates card inside control board
-                        TemplatesBar(
-                            onLoadTemplate = { name ->
-                                selectedComponent = null
-                                simResult = null
-                                components.clear()
-                                wires.clear()
-                                when (name) {
-                                    "RC" -> loadRCTemplate(components, wires)
-                                    "Rectifier" -> loadRectifierTemplate(components, wires)
-                                    "RLC" -> loadRLCTemplate(components, wires)
-                                }
-                            }
-                        )
-
-                        SchematicFileBar(
-                            onImportClick = {
-                                importText = ""
-                                showImportExportDialog = true
-                            },
-                            onExportClick = {
-                                importText = exportToSchemaString()
-                                showImportExportDialog = true
-                            },
-                            onRegisterSubcircuitClick = {
-                                subcircuitNameInput = "MY_IC_${(10..99).random()}"
-                                showSubcircuitDialog = true
-                            }
-                        )
-
-                        Box(modifier = Modifier.weight(1f)) {
-                            when (bottomTabState) {
-                                0 -> {
-                                    if (runError != null) {
-                                        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-                                            Text(runError!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                                        }
-                                    } else {
-                                        WaveformViewer(
-                                            result = simResult ?: SimResult(emptyList(), "Time", emptyMap(), emptyMap()),
-                                            probedNodeToActivate = probedNodeToActivate,
-                                            onSelectNodeFromChart = { probedNodeToActivate = null }
+                                    IconButton(onClick = { isPlotterExpanded = false }, modifier = Modifier.size(24.dp)) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Close Plotter",
+                                            tint = Color.Gray,
+                                            modifier = Modifier.size(18.dp)
                                         )
                                     }
                                 }
-                                1 -> {
-                                    ComponentCatalog(
-                                        selectedType = placingComponentType,
-                                        onSelectType = {
-                                            placingComponentType = it
-                                            activeTool = WorkspaceTool.PLACE_COMPONENT
-                                        }
-                                    )
+                            }
+                        }
+                    }
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                            if (runError != null) {
+                                Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+                                    Text(runError!!, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
                                 }
-                                2 -> {
-                                    SimulationSettingsControl(
-                                        settings = simSettings,
-                                        onSettingsChange = { simSettings = it }
-                                    )
+                            } else {
+                                WaveformViewer(
+                                    result = simResult ?: SimResult(emptyList(), "Time", emptyMap(), emptyMap()),
+                                    probedNodeToActivate = probedNodeToActivate,
+                                    onSelectNodeFromChart = { probedNodeToActivate = null }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- FLOATING MULTI-SELECT OVERLAY ACTIONS BANNER ---
+            if (isMultiSelectMode && showMultiSelectActions) {
+                val multiSelectBottomPadding = if (isPlotterExpanded) {
+                    388.dp
+                } else {
+                    val density = androidx.compose.ui.platform.LocalDensity.current
+                    val bottomPx = heightPx - waveformBtnPos.y + with(density) { 8.dp.toPx() }
+                    with(density) { bottomPx.toDp() }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = multiSelectBottomPadding)
+                        .zIndex(10f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Card(
+                        shape = RoundedCornerShape(24.dp),
+                        elevation = CardDefaults.cardElevation(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF202124)),
+                        border = BorderStroke(1.5.dp, Color(0xFF00FFCC)),
+                        modifier = Modifier
+                            .wrapContentSize()
+                            .padding(horizontal = 24.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            Text(
+                                text = "${multiSelectedComponents.size} Selected",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FFCC)
+                            )
+                            
+                            Box(modifier = Modifier.width(1.dp).height(24.dp).background(Color.Gray))
+                            
+                            // Copy
+                            IconButton(
+                                onClick = {
+                                    clipboardComponents.clear()
+                                    clipboardComponents.addAll(multiSelectedComponents)
+                                    clipboardWires.clear()
+                                    val selectedPins = multiSelectedComponents.flatMap { it.getPins() }.toSet()
+                                    val selWires = wires.filter { wire ->
+                                        selectedPins.any { it.x == wire.start.x && it.y == wire.start.y } &&
+                                        selectedPins.any { it.x == wire.end.x && it.y == wire.end.y }
+                                    }
+                                    clipboardWires.addAll(selWires)
+                                    Toast.makeText(context, "Copied ${multiSelectedComponents.size} components", Toast.LENGTH_SHORT).show()
+                                    showMultiSelectActions = false
                                 }
-                                3 -> {
-                                    GeminiChatPanel(
-                                        components = components,
-                                        wires = wires,
-                                        simSettings = simSettings,
-                                        simResult = simResult,
-                                        onReplaceCircuit = { newComps, newWires ->
-                                            pushUndoState()
-                                            components.clear()
-                                            components.addAll(newComps)
-                                            wires.clear()
-                                            wires.addAll(newWires)
-                                            selectedComponent = null
-                                        },
-                                        onModifyParameters = { modifications ->
-                                            pushUndoState()
-                                            modifications.forEach { mod ->
-                                                val idx = components.indexOfFirst { it.name.lowercase() == mod.name.lowercase() }
-                                                if (idx != -1) {
-                                                    components[idx] = components[idx].copy(valueStr = mod.valueStr)
-                                                }
-                                            }
-                                            selectedComponent = null
-                                        },
-                                        onRunSimulation = { settings ->
-                                            simSettings = settings
-                                            runSpiceSimulation()
-                                        },
-                                        onShowSettings = { showGoogleAuthDialog = true },
-                                        sessionManager = sessionManager
-                                    )
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Share, contentDescription = "Copy", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Text("Copy", fontSize = 8.sp, color = Color.LightGray)
+                                }
+                            }
+                            
+                            // Cut
+                            IconButton(
+                                onClick = {
+                                    clipboardComponents.clear()
+                                    clipboardComponents.addAll(multiSelectedComponents)
+                                    clipboardWires.clear()
+                                    val selectedPins = multiSelectedComponents.flatMap { it.getPins() }.toSet()
+                                    val selWires = wires.filter { wire ->
+                                        selectedPins.any { it.x == wire.start.x && it.y == wire.start.y } &&
+                                        selectedPins.any { it.x == wire.end.x && it.y == wire.end.y }
+                                    }
+                                    clipboardWires.addAll(selWires)
+                                    
+                                    pushUndoState()
+                                    multiSelectedComponents.forEach { comp ->
+                                        components.remove(comp)
+                                    }
+                                    selWires.forEach { w ->
+                                        wires.remove(w)
+                                    }
+                                    multiSelectedComponents.clear()
+                                    isMultiSelectMode = false
+                                    showMultiSelectActions = false
+                                    runSpiceSimulationQuietly()
+                                    Toast.makeText(context, "Cut ${clipboardComponents.size} elements", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.LocationOn, contentDescription = "Cut", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Text("Cut", fontSize = 8.sp, color = Color.LightGray)
+                                }
+                            }
+                            
+                            // Drag Indicator Instruction Trigger
+                            IconButton(
+                                onClick = {
+                                    Toast.makeText(context, "Drag any selected component to slide/move them", Toast.LENGTH_LONG).show()
+                                }
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Build, contentDescription = "Drag Tool Instruction", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Text("Drag", fontSize = 8.sp, color = Color.LightGray)
+                                }
+                            }
+                            
+                            // Delete
+                            IconButton(
+                                onClick = {
+                                    pushUndoState()
+                                    val selectedPins = multiSelectedComponents.flatMap { it.getPins() }.toSet()
+                                    val selWires = wires.filter { wire ->
+                                        selectedPins.any { it.x == wire.start.x && it.y == wire.start.y } &&
+                                        selectedPins.any { it.x == wire.end.x && it.y == wire.end.y }
+                                    }
+                                    multiSelectedComponents.forEach { comp ->
+                                        components.remove(comp)
+                                    }
+                                    selWires.forEach { w ->
+                                        wires.remove(w)
+                                    }
+                                    multiSelectedComponents.clear()
+                                    isMultiSelectMode = false
+                                    showMultiSelectActions = false
+                                    runSpiceSimulationQuietly()
+                                    Toast.makeText(context, "Deleted selection", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete selection", tint = Color.Red, modifier = Modifier.size(20.dp))
+                                    Text("Delete", fontSize = 8.sp, color = Color.Red)
+                                }
+                            }
+                            
+                            // Close Selection mode
+                            IconButton(
+                                onClick = {
+                                    multiSelectedComponents.clear()
+                                    isMultiSelectMode = false
+                                    showMultiSelectActions = false
+                                }
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel selection", tint = Color.Gray, modifier = Modifier.size(20.dp))
+                                    Text("Cancel", fontSize = 8.sp, color = Color.Gray)
                                 }
                             }
                         }
@@ -869,8 +1522,178 @@ fun SpiceAppUi() {
                         orientation = updatedOrient
                     )
                     selectedComponent = components[idx]
+                    runSpiceSimulation()
                 }
                 showPropertiesDialog = false
+            },
+            onValueChangeInRealTime = { updatedVal ->
+                val comp = selectedComponent
+                if (comp != null) {
+                    val idx = components.indexOfFirst { it.id == comp.id }
+                    if (idx != -1) {
+                        components[idx] = comp.copy(
+                            valueStr = updatedVal
+                        )
+                        selectedComponent = components[idx]
+                        runSpiceSimulationQuietly()
+                    }
+                }
+            }
+        )
+    }
+
+    if (showSaveAsDialog) {
+        var newFileName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showSaveAsDialog = false },
+            title = { Text("Save As (Download Circuit to System)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Select name for your schematic file. The file will be stored in the circuits folder, remembering your last saved location automatically on reload.")
+                    
+                    OutlinedTextField(
+                        value = newFileName,
+                        onValueChange = { newFileName = it },
+                        modifier = Modifier.fillMaxWidth().testTag("save_as_filename_input"),
+                        label = { Text("File Name (e.g., filter_v1.json)") },
+                        singleLine = true
+                    )
+                    
+                    Text(
+                        text = "Destination directory: ${currentFolderFile.absolutePath}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.LightGray
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newFileName.isNotBlank()) {
+                            val finalFile = java.io.File(currentFolderFile, if (newFileName.endsWith(".json")) newFileName else "$newFileName.json")
+                            try {
+                                val json = exportToSchemaString()
+                                finalFile.writeText(json)
+                                
+                                // Save selection directory in SharedPrefs so it remembers next time!
+                                sharedPrefs.edit().putString(lastFolderKey, currentFolderFile.absolutePath).apply()
+                                
+                                syncCurrentCanvasToActiveTab()
+                                
+                                // Update or Add tab matching this file
+                                val currentIdx = openTabs.indexOfFirst { it.id == activeTabId }
+                                if (currentIdx != -1) {
+                                    openTabs[currentIdx] = openTabs[currentIdx].copy(
+                                        name = finalFile.name,
+                                        file = finalFile
+                                    )
+                                } else {
+                                    val newTab = WorkspaceTab(
+                                        id = java.util.UUID.randomUUID().toString(),
+                                        name = finalFile.name,
+                                        file = finalFile,
+                                        components = components.toList(),
+                                        wires = wires.toList()
+                                    )
+                                    openTabs.add(newTab)
+                                    activeTabId = newTab.id
+                                }
+                                
+                                showSaveAsDialog = false
+                                Toast.makeText(context, "Saved to ${finalFile.name}", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(context, "Failed to save: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "File name cannot be empty", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                ) {
+                    Text("Save File")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveAsDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showOpenDialog) {
+        val jsonFiles = currentFolderFile.listFiles { f -> f.isFile && f.name.endsWith(".json") }?.toList() ?: emptyList()
+        AlertDialog(
+            onDismissRequest = { showOpenDialog = false },
+            title = { Text("Open Schematics (Multi-File Canvas)") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Choose one or multiple file layers from '${currentFolderFile.name}' to open as horizontal tabs above the workspace.")
+                    
+                    if (jsonFiles.isEmpty()) {
+                        Text("No schematics found. Please save a file first using 'Save As'!", color = Color.Gray, fontWeight = FontWeight.Bold)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.height(260.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(jsonFiles) { file ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            try {
+                                                val json = file.readText()
+                                                
+                                                // Save folder path
+                                                sharedPrefs.edit().putString(lastFolderKey, currentFolderFile.absolutePath).apply()
+                                                
+                                                // Parse components and wires safely using the regex-based schema parser
+                                                val parsedPair = parseJsonSchemaDirectly(json)
+                                                
+                                                // Create a new tab
+                                                val tabId = java.util.UUID.randomUUID().toString()
+                                                val parsedTab = WorkspaceTab(
+                                                    id = tabId,
+                                                    name = file.name,
+                                                    file = file,
+                                                    components = parsedPair.first,
+                                                    wires = parsedPair.second
+                                                )
+                                                
+                                                // Add and active tab
+                                                openTabs.add(parsedTab)
+                                                selectTab(parsedTab.id)
+                                                
+                                                showOpenDialog = false
+                                                Toast.makeText(context, "Opened ${file.name}", Toast.LENGTH_SHORT).show()
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Error decoding file: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF2D3135))
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Default.Share, contentDescription = null, tint = Color.LightGray)
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(file.name, fontWeight = FontWeight.SemiBold, color = Color.White)
+                                            Text("Path: System Cache/circuits", fontSize = 10.sp, color = Color.Gray)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showOpenDialog = false }) {
+                    Text("Close")
+                }
             }
         )
     }
@@ -980,6 +1803,325 @@ fun SpiceAppUi() {
             }
         )
     }
+
+    if (showHotkeyOverlay) {
+        val keyboardController = LocalSoftwareKeyboardController.current
+        AlertDialog(
+            onDismissRequest = { 
+                showHotkeyOverlay = false 
+            },
+            title = null,
+            text = {
+                var inputStr by remember { mutableStateOf("") }
+                val focusRequester = remember { FocusRequester() }
+
+                var showKeysList by remember { mutableStateOf(false) }
+                var showEditArea by remember { mutableStateOf(false) }
+
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(100)
+                    focusRequester.requestFocus()
+                    keyboardController?.show()
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Hotkey",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // The text field that is focused to capture typing
+                    OutlinedTextField(
+                        value = inputStr,
+                        onValueChange = { newValue ->
+                            // Capture only the latest typed character
+                            val charTyped = newValue.lastOrNull()?.toString()?.uppercase(java.util.Locale.ROOT) ?: ""
+                            inputStr = charTyped
+                            
+                            if (charTyped.isNotEmpty()) {
+                                val mapping = hotkeyMap[charTyped]
+                                if (mapping != null) {
+                                    val (tool, target) = mapping
+                                    activeTool = tool
+                                    if (tool == WorkspaceTool.PLACE_COMPONENT) {
+                                        val compType = try {
+                                            ComponentType.valueOf(target.uppercase(java.util.Locale.ROOT))
+                                        } catch (e: Exception) {
+                                            null
+                                        }
+                                        if (compType != null) {
+                                            placingComponentType = compType
+                                            placingComponentValue = null
+                                            Toast.makeText(context, "Selected: ${compType.name} (Hotkey $charTyped)", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            placingComponentType = ComponentType.SUBCIRCUIT
+                                            placingComponentValue = target
+                                            Toast.makeText(context, "Selected: $target subcircuit (Hotkey $charTyped)", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        placingComponentValue = null
+                                        Toast.makeText(context, "Tool Activated: ${tool.name} (Hotkey $charTyped)", Toast.LENGTH_SHORT).show()
+                                    }
+                                    showHotkeyOverlay = false
+                                    keyboardController?.hide()
+                                } else {
+                                    Toast.makeText(context, "No hotkey mapped for $charTyped", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                            .testTag("hotkey_input_field"),
+                        placeholder = { Text("Type a matching key...") },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            textAlign = TextAlign.Center,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { 
+                                showKeysList = !showKeysList 
+                                if (showKeysList) showEditArea = false
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (showKeysList) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = if (showKeysList) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            modifier = Modifier.weight(1f).testTag("show_keys_toggle")
+                        ) {
+                            Text(if (showKeysList) "Hide Keys" else "Show Keys")
+                        }
+
+                        Button(
+                            onClick = { 
+                                showEditArea = !showEditArea 
+                                if (showEditArea) showKeysList = false
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (showEditArea) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = if (showEditArea) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            modifier = Modifier.weight(1f).testTag("edit_keys_toggle")
+                        ) {
+                            Text(if (showEditArea) "Close Edit" else "Edit Keys")
+                        }
+                    }
+
+                    if (showKeysList) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(160.dp)
+                                .verticalScroll(rememberScrollState())
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val sortedMap = hotkeyMap.toList().sortedBy { it.first }
+                            sortedMap.chunked(2).forEach { pair ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    pair.forEach { (key, mapping) ->
+                                        val (tool, target) = mapping
+                                        val displayName = if (tool == WorkspaceTool.PLACE_COMPONENT) target else tool.name
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(vertical = 2.dp)
+                                                .clickable {
+                                                    activeTool = tool
+                                                    if (tool == WorkspaceTool.PLACE_COMPONENT) {
+                                                        val compType = try {
+                                                            ComponentType.valueOf(target.uppercase(java.util.Locale.ROOT))
+                                                        } catch (e: Exception) {
+                                                            null
+                                                        }
+                                                        if (compType != null) {
+                                                            placingComponentType = compType
+                                                            placingComponentValue = null
+                                                        } else {
+                                                            placingComponentType = ComponentType.SUBCIRCUIT
+                                                            placingComponentValue = target
+                                                        }
+                                                    } else {
+                                                        placingComponentValue = null
+                                                    }
+                                                    showHotkeyOverlay = false
+                                                    keyboardController?.hide()
+                                                    Toast.makeText(context, "Selected: $displayName", Toast.LENGTH_SHORT).show()
+                                                },
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(24.dp)
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = key,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 12.sp,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = displayName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                    if (pair.size < 2) {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (showEditArea) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        var editKeyName by remember { mutableStateOf("") }
+                        var editTargetName by remember { mutableStateOf("") }
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp)
+                                .verticalScroll(rememberScrollState())
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "Customize Key Binding",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            OutlinedTextField(
+                                value = editKeyName,
+                                onValueChange = { editKeyName = it.take(1).uppercase(java.util.Locale.ROOT) },
+                                label = { Text("Shortcut Key (e.g. K, Y)") },
+                                modifier = Modifier.fillMaxWidth().testTag("edit_key_input"),
+                                singleLine = true
+                            )
+
+                            OutlinedTextField(
+                                value = editTargetName,
+                                onValueChange = { editTargetName = it },
+                                label = { Text("Component/Tool (e.g. RESISTOR)") },
+                                placeholder = { Text("RESISTOR, filter, WIRE") },
+                                modifier = Modifier.fillMaxWidth().testTag("edit_target_input"),
+                                singleLine = true
+                            )
+
+                            val subcircuitsCount = SubcircuitRegistry.templates.keys.size
+                            Text(
+                                text = "Options:\n" +
+                                       "• Standard: RESISTOR, CAPACITOR, INDUCTOR, DIODE, VOLTAGE_SOURCE, CURRENT_SOURCE, GROUND, TRANSISTOR_NPN, MOSFET_N, OPAMP, THYRISTOR, RELAY, TRIAC, PORT\n" +
+                                       "• Tools: WIRE, ERASE, PROBE, SELECT\n" +
+                                       "• Custom Subcircuits (${subcircuitsCount}): " + 
+                                       (if(subcircuitsCount == 0) "None yet" else SubcircuitRegistry.templates.keys.joinToString(", ")),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            Button(
+                                onClick = {
+                                    val trimmedKey = editKeyName.trim().uppercase(java.util.Locale.ROOT)
+                                    val trimmedTarget = editTargetName.trim()
+                                    if (trimmedKey.isEmpty() || trimmedTarget.isEmpty()) {
+                                        Toast.makeText(context, "Please fill in all fields!", Toast.LENGTH_SHORT).show()
+                                        return@Button
+                                    }
+
+                                    // Verify tools
+                                    val matchedTool = when (trimmedTarget.uppercase(java.util.Locale.ROOT)) {
+                                        "WIRE" -> WorkspaceTool.DRAW_WIRE
+                                        "ERASE", "DELETE" -> WorkspaceTool.ERASE
+                                        "PROBE" -> WorkspaceTool.PROBE
+                                        "SELECT", "POINTER" -> WorkspaceTool.SELECT
+                                        else -> null
+                                    }
+
+                                    if (matchedTool != null) {
+                                        hotkeyMap[trimmedKey] = matchedTool to ""
+                                        Toast.makeText(context, "Mapped '$trimmedKey' to tool ${matchedTool.name}", Toast.LENGTH_SHORT).show()
+                                        showEditArea = false
+                                    } else {
+                                        // Verify standard types
+                                        val matchedStandardType = ComponentType.values().find { 
+                                            it.name.equals(trimmedTarget, ignoreCase = true) 
+                                        }
+
+                                        // Verify custom subcircuits
+                                        val matchedSubcircuitName = SubcircuitRegistry.templates.keys.find {
+                                            it.equals(trimmedTarget, ignoreCase = true)
+                                        }
+
+                                        if (matchedStandardType != null) {
+                                            hotkeyMap[trimmedKey] = WorkspaceTool.PLACE_COMPONENT to matchedStandardType.name
+                                            Toast.makeText(context, "Mapped '$trimmedKey' to ${matchedStandardType.name}", Toast.LENGTH_SHORT).show()
+                                            showEditArea = false
+                                        } else if (matchedSubcircuitName != null) {
+                                            hotkeyMap[trimmedKey] = WorkspaceTool.PLACE_COMPONENT to matchedSubcircuitName
+                                            Toast.makeText(context, "Mapped '$trimmedKey' to subcircuit '$matchedSubcircuitName'", Toast.LENGTH_SHORT).show()
+                                            showEditArea = false
+                                        } else {
+                                            Toast.makeText(
+                                                context, 
+                                                "Error: '$trimmedTarget' is not an existing component type or custom subcircuit!", 
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth().testTag("add_hotkey_button")
+                            ) {
+                                Text("Save Mapping")
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { 
+                    showHotkeyOverlay = false 
+                    keyboardController?.hide()
+                }) {
+                    Text("Dismiss")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -994,7 +2136,8 @@ fun ModeToolbar(
     onRedo: () -> Unit,
     canUndo: Boolean,
     canRedo: Boolean,
-    onCopy: (() -> Unit)? = null
+    onCopy: (() -> Unit)? = null,
+    onHotkeyClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -1048,6 +2191,28 @@ fun ModeToolbar(
                 Icon(Icons.Default.Search, contentDescription = "Diagnostics Oscilloscope Probe")
             }
 
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Keycap "K" Button
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .border(BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline), RoundedCornerShape(6.dp))
+                    .clickable { onHotkeyClick() }
+                    .testTag("hotkey_trigger_k"),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "K",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
             // Vertical divider for Undo / Redo grouping
             Spacer(modifier = Modifier.width(4.dp))
             Box(modifier = Modifier.width(1.dp).height(24.dp).background(MaterialTheme.colorScheme.outlineVariant))
@@ -1059,7 +2224,7 @@ fun ModeToolbar(
                 enabled = canUndo
             ) {
                 Icon(
-                    imageVector = Icons.Default.KeyboardArrowLeft,
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                     contentDescription = "Undo previous action",
                     tint = if (canUndo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
                 )
@@ -1071,7 +2236,7 @@ fun ModeToolbar(
                 enabled = canRedo
             ) {
                 Icon(
-                    imageVector = Icons.Default.KeyboardArrowRight,
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                     contentDescription = "Redo undone action",
                     tint = if (canRedo) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
                 )
@@ -1230,6 +2395,12 @@ fun ComponentCatalog(
     onSelectType: (ComponentType) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        focusRequester.requestFocus()
+    }
+
     val items = ComponentType.values().filter { type ->
         val nameMatch = when (type) {
             ComponentType.RESISTOR -> "Resistor (R) resistance ohm"
@@ -1254,13 +2425,9 @@ fun ComponentCatalog(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(12.dp)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        Text("Component Box Selector", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        Text("Choose structural part below, then tap empty grid cell to place it.", fontSize = 11.sp, color = Color.Gray)
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Component Search Input Field
+        // Component Search Input Field (sits at absolute top of body container)
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
@@ -1268,10 +2435,11 @@ fun ComponentCatalog(
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
+                .padding(vertical = 4.dp)
+                .focusRequester(focusRequester),
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp)
         )
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         val scrollState = rememberScrollState()
         Column(
@@ -1379,7 +2547,7 @@ fun SimulationSettingsControl(
             }
         }
 
-        Divider()
+        HorizontalDivider()
 
         when (settings.type) {
             SimType.TRANSIENT -> {
@@ -1510,7 +2678,7 @@ fun SimulationSettingsControl(
             }
         }
 
-        Divider()
+        HorizontalDivider()
 
         Card(
             modifier = Modifier.fillMaxWidth(),

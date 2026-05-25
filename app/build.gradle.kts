@@ -58,6 +58,15 @@ android {
   testOptions { unitTests { isIncludeAndroidResources = true } }
 }
 
+// Automatically generate .env from host environment variables if it does not exist
+val envFile = file("${rootDir}/.env")
+if (!envFile.exists()) {
+  val content = StringBuilder()
+  val geminiKey = System.getenv("GEMINI_API_KEY") ?: ""
+  content.append("GEMINI_API_KEY=${geminiKey}\n")
+  envFile.writeText(content.toString())
+}
+
 // Configure the Secrets Gradle Plugin to use .env and .env.example files
 // to match the convention used in Web projects.
 secrets {

@@ -6,12 +6,14 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,6 +25,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import kotlinx.coroutines.launch
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.*
@@ -115,6 +118,11 @@ fun WaveformViewer(
     var activeCursorIndex by remember { mutableStateOf<Int?>(null) }
     var touchXOffset by remember { mutableStateOf<Float?>(null) }
 
+    var zoomX by remember(result) { mutableStateOf(1f) }
+    var zoomY by remember(result) { mutableStateOf(1f) }
+    var panX by remember(result) { mutableStateOf(0.0) }
+    var panY by remember(result) { mutableStateOf(0.0) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -122,13 +130,47 @@ fun WaveformViewer(
             .padding(12.dp)
     ) {
         // --- 1. CHANNEL SELECTOR CHIPS ---
-        Text(
-            text = "Active Waveforms & Probe Diagnostics",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.secondary,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Active Waveforms & Probe Diagnostics",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.secondary,
+                modifier = Modifier.padding(bottom = 6.dp)
+            )
+            
+            if (zoomX != 1f || zoomY != 1f || panX != 0.0 || panY != 0.0) {
+                TextButton(
+                    onClick = {
+                        zoomX = 1f
+                        zoomY = 1f
+                        panX = 0.0
+                        panY = 0.0
+                        activeCursorIndex = null
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Reset viewport zoom",
+                        tint = Color(0xFFFACC15),
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Reset Graph",
+                        color = Color(0xFFFACC15),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
         
         FlowRow(
             modifier = Modifier
@@ -237,11 +279,28 @@ fun WaveformViewer(
                     val tMax = result.timePoints.lastOrNull() ?: 1.0
                     val tDiff = if (tMax == tMin) 1.0 else tMax - tMin
 
+                    // Zoom and pan viewport constraints
+                    val tCenterDefault = tMin + tDiff * 0.5
+                    val tCenter = tCenterDefault + panX
+                    val tHalfSpan = (tDiff * 0.5) / zoomX
+                    val tLeft = if (tCenter.isFinite() && tHalfSpan.isFinite()) tCenter - tHalfSpan else tMin
+                    val tRight = if (tCenter.isFinite() && tHalfSpan.isFinite()) tCenter + tHalfSpan else tMax
+                    val tDiffCurrentRaw = tRight - tLeft
+                    val tDiffCurrent = if (!tDiffCurrentRaw.isFinite() || tDiffCurrentRaw <= 1e-30) 1.0 else tDiffCurrentRaw
+
+                    val yCenterDefault = yMin + (yMax - yMin) * 0.5
+                    val yCenter = yCenterDefault + panY
+                    val yHalfSpan = ((yMax - yMin) * 0.5) / zoomY
+                    val yBottom = if (yCenter.isFinite() && yHalfSpan.isFinite()) yCenter - yHalfSpan else yMin
+                    val yTop = if (yCenter.isFinite() && yHalfSpan.isFinite()) yCenter + yHalfSpan else yMax
+                    val yDiffCurrentRaw = yTop - yBottom
+                    val yDiffCurrent = if (!yDiffCurrentRaw.isFinite() || yDiffCurrentRaw <= 1e-30) 1.0 else yDiffCurrentRaw
+
                     val updateCursor = { pxX: Float ->
                         if (pxX in paddingLeft..(paddingLeft + plotWidth)) {
                             touchXOffset = pxX
                             val touchRatio = (pxX - paddingLeft) / plotWidth
-                            val targetTime = tMin + touchRatio * tDiff
+                            val targetTime = tLeft + touchRatio * tDiffCurrent
 
                             var closestIdx = 0
                             var minTimeDiff = Double.MAX_VALUE
@@ -264,32 +323,48 @@ fun WaveformViewer(
                         activeCursorIndex = null
                     }
 
+                    // Remember updated state to prevent stale layout size captures in pointer input blocks
+                    val currentPlotWidth by rememberUpdatedState(if (plotWidth > 0f) plotWidth else 1.0f)
+                    val currentPlotHeight by rememberUpdatedState(if (plotHeight > 0f) plotHeight else 1.0f)
+                    val currentTDiffCurrent by rememberUpdatedState(tDiffCurrent)
+                    val currentYDiffCurrent by rememberUpdatedState(yDiffCurrent)
+                    val currentUpdateCursor by rememberUpdatedState(updateCursor)
+
                     Canvas(
                         modifier = Modifier
                             .fillMaxSize()
                             .pointerInput(result) {
-                                detectTapGestures(
-                                    onPress = { offset ->
-                                        updateCursor(offset.x)
-                                        tryAwaitRelease()
-                                        clearCursor()
+                                detectTransformGestures(panZoomLock = false) { _, pan, zoom, _ ->
+                                    if (pan != Offset.Zero) {
+                                        val pw = currentPlotWidth
+                                        val ph = currentPlotHeight
+                                        val td = currentTDiffCurrent
+                                        val yd = currentYDiffCurrent
+                                        val nextPanX = panX - (pan.x.toDouble() / pw) * td
+                                        val nextPanY = panY + (pan.y.toDouble() / ph) * yd
+                                        if (nextPanX.isFinite() && !nextPanX.isNaN()) {
+                                            panX = nextPanX
+                                        }
+                                        if (nextPanY.isFinite() && !nextPanY.isNaN()) {
+                                            panY = nextPanY
+                                        }
                                     }
-                                )
+                                    if (zoom != 1f && zoom.isFinite() && !zoom.isNaN()) {
+                                        val nextZoomX = (zoomX * zoom).coerceIn(0.1f, 100f)
+                                        val nextZoomY = (zoomY * zoom).coerceIn(0.1f, 100f)
+                                        if (nextZoomX.isFinite() && !nextZoomX.isNaN()) {
+                                            zoomX = nextZoomX
+                                        }
+                                        if (nextZoomY.isFinite() && !nextZoomY.isNaN()) {
+                                            zoomY = nextZoomY
+                                        }
+                                    }
+                                }
                             }
                             .pointerInput(result) {
-                                detectDragGestures(
-                                    onDragStart = { offset ->
-                                        updateCursor(offset.x)
-                                    },
-                                    onDrag = { change, _ ->
-                                        change.consume()
-                                        updateCursor(change.position.x)
-                                    },
-                                    onDragEnd = {
-                                        clearCursor()
-                                    },
-                                    onDragCancel = {
-                                        clearCursor()
+                                detectTapGestures(
+                                    onTap = { offset ->
+                                        currentUpdateCursor(offset.x)
                                     }
                                 )
                             }
@@ -349,17 +424,14 @@ fun WaveformViewer(
                                     val dVal = dataList[i]
 
                                     if (tVal.isFinite() && dVal.isFinite()) {
-                                        val xRatio = (tVal - tMin) / tDiff
-                                        val yRatio = (dVal - yMin) / (yMax - yMin)
+                                        val xRatio = (tVal - tLeft) / tDiffCurrent
+                                        val yRatio = (dVal - yBottom) / yDiffCurrent
 
                                         if (xRatio.isFinite() && yRatio.isFinite()) {
                                             val cX = paddingLeft + xRatio.toFloat() * plotWidth
                                             val cY = paddingTop + (1f - yRatio.toFloat()) * plotHeight
 
-                                            if (cX.isFinite() && cY.isFinite() &&
-                                                cX in paddingLeft..(paddingLeft + plotWidth) && 
-                                                cY in paddingTop..(paddingTop + plotHeight)
-                                            ) {
+                                            if (cX.isFinite() && cY.isFinite()) {
                                                 if (isFirst) {
                                                     path.moveTo(cX, cY)
                                                     isFirst = false
@@ -371,11 +443,18 @@ fun WaveformViewer(
                                     }
                                 }
 
-                                drawPath(
-                                    path = path,
-                                    color = color,
-                                    style = Stroke(width = 4f, cap = StrokeCap.Round)
-                                )
+                                clipRect(
+                                    left = paddingLeft,
+                                    top = paddingTop,
+                                    right = paddingLeft + plotWidth,
+                                    bottom = paddingTop + plotHeight
+                                ) {
+                                    drawPath(
+                                        path = path,
+                                        color = color,
+                                        style = Stroke(width = 4f, cap = StrokeCap.Round)
+                                    )
+                                }
                             }
                         }
 
@@ -383,7 +462,7 @@ fun WaveformViewer(
                         // Y axis tags
                         for (i in 0..4) {
                             val ratio = i.toFloat() / 4
-                            val tagVal = yMin + ratio * (yMax - yMin)
+                            val tagVal = yBottom + ratio * yDiffCurrent
                             val y = paddingTop + (1f - ratio) * plotHeight
                             val formatVal = getEngineeringString(tagVal)
 
@@ -402,7 +481,7 @@ fun WaveformViewer(
                         // X axis tags (Time/Frequency intervals)
                         for (i in 0..4) {
                             val ratio = i.toFloat() / 4
-                            val tagVal = tMin + ratio * tDiff
+                            val tagVal = tLeft + ratio * tDiffCurrent
                             val x = paddingLeft + ratio * plotWidth
                             val formatVal = formatEngUnit(tagVal, xUnit)
 
@@ -422,20 +501,22 @@ fun WaveformViewer(
                         activeCursorIndex?.let { cursorIdx ->
                             if (cursorIdx in result.timePoints.indices) {
                                 val actualTime = result.timePoints[cursorIdx]
-                                val lineX = paddingLeft + ((actualTime - tMin) / tDiff).toFloat() * plotWidth
+                                val lineX = paddingLeft + ((actualTime - tLeft) / tDiffCurrent).toFloat() * plotWidth
 
-                                drawLine(
-                                    color = Color.LightGray.copy(alpha = 0.5f),
-                                    start = Offset(lineX, paddingTop),
-                                    end = Offset(lineX, paddingTop + plotHeight),
-                                    strokeWidth = 3f
-                                )
+                                if (lineX in paddingLeft..(paddingLeft + plotWidth)) {
+                                    drawLine(
+                                        color = Color.LightGray.copy(alpha = 0.5f),
+                                        start = Offset(lineX, paddingTop),
+                                        end = Offset(lineX, paddingTop + plotHeight),
+                                        strokeWidth = 3f
+                                    )
 
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = 8f,
-                                    center = Offset(lineX, paddingTop + plotHeight)
-                                )
+                                    drawCircle(
+                                        color = Color.White,
+                                        radius = 8f,
+                                        center = Offset(lineX, paddingTop + plotHeight)
+                                    )
+                                }
                             }
                         }
                     }
@@ -488,6 +569,7 @@ fun WaveformViewer(
 
 // Format double values with engineering multipliers
 fun formatEngUnit(value: Double, unit: String): String {
+    if (!value.isFinite()) return "${value} ${unit}"
     val absVal = abs(value)
     return when {
         absVal >= 1e9 -> String.format(Locale.ROOT, "%.2f G%s", value / 1e9, unit)
@@ -504,6 +586,7 @@ fun formatEngUnit(value: Double, unit: String): String {
 }
 
 fun getEngineeringString(value: Double): String {
+    if (!value.isFinite()) return value.toString()
     val absVal = abs(value)
     return when {
          absVal >= 1e6 -> String.format(Locale.ROOT, "%.1fM", value / 1e6)

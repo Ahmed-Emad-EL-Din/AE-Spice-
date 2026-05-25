@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -229,6 +230,31 @@ fun GeminiChatPanel(
             append("  ]\n}")
         }
 
+        val subcircuitsJson = buildString {
+            if (SubcircuitRegistry.templates.isEmpty()) {
+                append("No custom subcircuits registered yet in this session.")
+            } else {
+                append("[\n")
+                val list = SubcircuitRegistry.templates.toList()
+                list.forEachIndexed { i, (id, temp) ->
+                    append("    {\n")
+                    append("      \"templateId\": \"$id\",\n")
+                    append("      \"name\": \"${temp.name}\",\n")
+                    append("      \"ports\": [")
+                    temp.ports.forEachIndexed { j, p ->
+                        val pName = temp.portNames.getOrNull(j) ?: "P$j"
+                        append("{\"localX\": ${p.x}, \"localY\": ${p.y}, \"label\": \"$pName\"}")
+                        if (j < temp.ports.size - 1) append(", ")
+                    }
+                    append("]\n")
+                    append("    }")
+                    if (i < list.size - 1) append(",")
+                    append("\n")
+                }
+                append("  ]")
+            }
+        }
+
         val resultContext = if (simResult != null) {
             "Simulation Success. Nodes evaluated: ${simResult.nodeVoltages.keys.joinToString(", ")}. Variables length = ${simResult.timePoints.size} data points. Active curves are readable."
         } else {
@@ -237,7 +263,7 @@ fun GeminiChatPanel(
 
         return """
 You are a brilliant SPICE Simulation and Electronic Design assistant helping the user design, draw, and modify schematics on a grid.
-Grid spacing is generally from X=-15 to 15, Y=-15 to 15.
+Grid coordinates generally range from X=-15 to 15, Y=-15 to 15.
 
 The current schematic layout is:
 $schemaJson
@@ -246,16 +272,98 @@ Current Simulation Type: ${simSettings.type.name}
 Simulation Settings: stopTime=${simSettings.stopTimeStr}, stepTime=${simSettings.stepTimeStr}
 Simulation Run Diagnostic: $resultContext
 
-Component properties configurations rules:
-1. Two-pin components (RESISTOR, CAPACITOR, INDUCTOR, DIODE, VOLTAGE_SOURCE, CURRENT_SOURCE) span 2 grid sizes horizontally or vertically. To connect, attach wires to their pins.
-A components pins are translated relative to its gridX/Y. Two pins are usually at local coordinates (-1, 0) and (1, 0) (unrotated).
-For GROUND, there is a single pin at its grid position. All active circuits must connect to GROUND to solve successfully (Ground node ID is always 0 / GND).
-PORT pin is at its grid position.
-TRANSISTOR_NPN pins are Base (-1, 0), Collector (1, -1), and Emitter (1, 1).
-MOSFET_N pins are Gate (-1, 0), Drain (1, -1), and Source (1, 1).
-OPAMP (UA741 / active op-amp icon): Inverting (-) (-1, -1), Non-Inverting (+) (-1, 1), and Output (1, 0).
+================================================================================
+SCHEMATIC MATHEMATICAL PIN TRANSLATION SYSTEM (MANDATORY PROPAGATION RULES)
+================================================================================
+When adding any components, each is centered at grid coordinate `(gridX, gridY)` with an orientation selected from: `DEG_0`, `DEG_90`, `DEG_180`, `DEG_270`.
+To connect these components, wires MUST terminate AT THE EXACT GLOBAL COORDINATES of their terminal pins.
 
-You can suggest and build circuits dynamically! If you want to DRAW, MODIFY, or RUN a simulation, format your reply with your regular dialogue detailing the electronics theory, AND include ONE special JSON code block matching the following schemas.
+### The Coordinate Rotation Formula:
+Given a component placed at center `(gridX, gridY)` with a local relative pin offset `(dx, dy)`, the exact global coordinate `(global_X, global_Y)` of that pin is calculated based on `orientation` as follows:
+- **`DEG_0` (Default unrotated):**
+  global_X = gridX + dx
+  global_Y = gridY + dy
+- **`DEG_90` (Rotated 90 degrees clockwise):**
+  global_X = gridX - dy
+  global_Y = gridY + dx
+- **`DEG_180` (Rotated 180 degrees):**
+  global_X = gridX - dx
+  global_Y = gridY - dy
+- **`DEG_270` (Rotated 270 degrees clockwise):**
+  global_X = gridX + dy
+  global_Y = gridY - dx
+
+Ensure ALL wires connecting to these pins terminate PRECISELY at the calculated global coordinate point!
+
+================================================================================
+PREDEFINED LOCAL PIN OFFSETS `(dx, dy)` FOR COMPONENT TYPES
+================================================================================
+Calculate global pins for components using these specific local relative offsets:
+
+- **GROUND (0) & PORT**:
+  * Pin 0: (0, 0)
+  * Always place a GROUND at the lowest potentials of your design. Ground node is GND/0. All circuits require at least one Ground to simulate successfully.
+
+- **RESISTOR, CAPACITOR, INDUCTOR, DIODE, VOLTAGE_SOURCE, CURRENT_SOURCE**:
+  * Pin 0 (Anode/Pos/Left): (-1, 0)
+  * Pin 1 (Cathode/Neg/Right): (1, 0)
+  * E.g., a RESISTOR at (0, 0) DEG_0 has pins at global (-1, 0) and (1, 0).
+  * E.g., a RESISTOR at (0, 0) DEG_90 has pins at global (0, -1) and (0, 1) due to rotation.
+
+- **TRANSISTOR_NPN**:
+  * Pin 0 (Base / B): (-1, 0)
+  * Pin 1 (Collector / C): (1, -1)
+  * Pin 2 (Emitter / E): (1, 1)
+
+- **MOSFET_N**:
+  * Pin 0 (Gate / G): (-1, 0)
+  * Pin 1 (Drain / D): (1, -1)
+  * Pin 2 (Source / S): (1, 1)
+
+- **THYRISTOR**:
+  * Pin 0 (Anode): (-1, 0)
+  * Pin 1 (Cathode): (1, 0)
+  * Pin 2 (Gate): (0, 1)
+
+- **RELAY**:
+  * Pin 0 (Coil 1): (-1, -1)
+  * Pin 1 (Coil 2): (-1, 1)
+  * Pin 2 (Switch Contact 1): (1, -1)
+  * Pin 3 (Switch Contact 2): (1, 1)
+
+- **TRIAC**:
+  * Pin 0 (Main Terminal 1 / MT1): (-1, 0)
+  * Pin 1 (Main Terminal 2 / MT2): (1, 0)
+  * Pin 2 (Gate): (0, 1)
+
+- **OPAMP**:
+  * Pin 0 (Inverting Input -): (-1, -1)
+  * Pin 1 (Non-Inverting Input +): (-1, 1)
+  * Pin 2 (Output): (1, 0)
+
+- **SUBCIRCUIT** (Custom integrated blocks made by users):
+  * These represent custom subcircuit macros or ICs.
+  * Set `"valueStr": "<templateId>"` to place them.
+  * Their pin offsets match the local ports defined in the Custom Subcircuits registry below.
+
+================================================================================
+REGISTERED CUSTOM SUBCIRCUITS AVAILABLE (Made by user)
+================================================================================
+You can use these custom subcircuit templates in your design. Match their `templateId` when placing a `SUBCIRCUIT` component, and translate their ports using their local relative offsets!
+$subcircuitsJson
+
+================================================================================
+ROBUST CONNECTION & DESIGN PROTOCOLS
+================================================================================
+1. **Never overlay active components**: Position components with at least 3-4 spatial grid spaces between their centers so they do not overlap.
+2. **Orthogonal Routing**: Draw wires in orthogonal (horizontal and vertical) segments to ensure high-fidelity schematics. If connecting (X1, Y1) to (X2, Y2), write two wires: one from (X1, Y1) to (X2, Y1), and another from (X2, Y1) to (X2, Y2).
+3. **Common Junction Nodes**: To join multiple pins, run wires from each pin to a shared junction grid point.
+4. **Complete Closed Loops**: Every signal path or current loop must be closed. Connect unused pins or voltage inputs through clean connections. Never leave power source ports open.
+
+================================================================================
+RESPONSE PATTERNS & SCHEMAS
+================================================================================
+Format your response with helpful engineering commentary explaining your design decisions, followed by ONE single JSON code block.
 
 Schema A (REPLACE ENTIRE SCHEMATIC OR GENERATE BRAND NEW CIRCUIT):
 ```json
@@ -296,7 +404,7 @@ Schema C (RUN ACTIVE SPICE SOLVER):
 }
 ```
 
-Ensure wires align exactly with component pin locations (usually -1 or +1 offsets from component coordinates) so user's schematic is connected. Keep your design theory concise and friendly!
+Always double check your global pin mathematics before sending any JSON. Do not write generic or mock components. Ensure all components are fully specified with realistic scientific values (e.g., "1k", "10u", "SINE(0 5 100)").
 """
     }
 
@@ -319,10 +427,10 @@ Ensure wires align exactly with component pin locations (usually -1 or +1 offset
         scope.launch {
             try {
                 val apiKey = sessionManager.getEffectiveApiKey()
-                if (apiKey.isBlank()) {
+                if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
                     messages = messages + ChatMessage(
                         id = "msg_error_${System.currentTimeMillis()}",
-                        text = "⚠️ Gemini API key is missing. Please click \"Google Auth Workspace\" at the top to configure credits or key settings.",
+                        text = "⚠️ Gemini API key is not configured yet!\n\nTo enable Gemini assistance:\n1. Click the \"Google Auth Workspace\" settings icon (⚙️) above in this chat panel.\n2. Tap the Checkbox \"Use Custom API Key (My Credits)\".\n3. Paste a personal Gemini API Key from Google AI Studio (https://aistudio.google.com/).\n\nAlternatively, ensure a valid key is set in the Google AI Studio Secrets panel as `GEMINI_API_KEY`.",
                         isUser = false
                     )
                     return@launch
@@ -363,6 +471,25 @@ Ensure wires align exactly with component pin locations (usually -1 or +1 offset
                     text = resultText,
                     isUser = false,
                     proposedAction = parsedAction
+                )
+            } catch (e: retrofit2.HttpException) {
+                e.printStackTrace()
+                val errorBody = try { e.response()?.errorBody()?.string() ?: "" } catch (ex: Exception) { "" }
+                val userErrorMessage = when {
+                    errorBody.contains("API_KEY_INVALID") -> {
+                        "Your Gemini API Key is invalid. Please double check that you copied the key correctly from Google AI Studio or verify your credit configuration."
+                    }
+                    errorBody.contains("quota") || errorBody.contains("limit") -> {
+                        "You have exceeded your Gemini API usage quota or credit limits. Please verify your Google AI Studio plan status."
+                    }
+                    else -> {
+                        "HTTP Error ${e.code()}: ${e.message()}"
+                    }
+                }
+                messages = messages + ChatMessage(
+                    id = "msg_err_${System.currentTimeMillis()}",
+                    text = "⚠️ Gemini API connection failed:\n$userErrorMessage",
+                    isUser = false
                 )
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -486,7 +613,7 @@ Ensure wires align exactly with component pin locations (usually -1 or +1 offset
             }
         }
 
-        Divider(color = Color(0xFF232527), thickness = 1.dp)
+        HorizontalDivider(color = Color(0xFF232527), thickness = 1.dp)
 
         // Chat List
         LazyColumn(
@@ -663,7 +790,7 @@ Ensure wires align exactly with component pin locations (usually -1 or +1 offset
                         CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
                     } else {
                         Icon(
-                            imageVector = Icons.Default.Send,
+                            imageVector = Icons.AutoMirrored.Filled.Send,
                             contentDescription = "Send",
                             tint = if (textInput.isNotBlank()) Color.White else Color.Gray,
                             modifier = Modifier.size(18.dp)

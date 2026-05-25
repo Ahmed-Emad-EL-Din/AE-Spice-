@@ -253,8 +253,12 @@ fun GoogleAuthDialog(
                                 modifier = Modifier
                                     .padding(bottom = 16.dp)
                                     .clickable {
-                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/"))
-                                        context.startActivity(intent)
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/"))
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            Toast.makeText(context, "Could not open web browser.", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                             )
                         }
