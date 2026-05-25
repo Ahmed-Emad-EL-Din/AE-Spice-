@@ -195,7 +195,18 @@ object SpiceUtils {
         if (valueStr.isBlank()) return 0.0
         val trimmed = valueStr.trim().lowercase(Locale.ROOT)
         
-        // Extract leading numeric part
+        // 1. Try direct double parsing (e.g. "3.88184e-14" or "1e-5" or "1.5")
+        trimmed.toDoubleOrNull()?.let { return it }
+
+        // 2. Try parsing scientific notation prefix (e.g. "3.88184e-14af" - with extra trailing chars)
+        val sciRegex = """^([+\-]?\d*(?:\.\d+)?(?:[eE][+\-]?\d+))""".toRegex()
+        val matchSci = sciRegex.find(trimmed)
+        if (matchSci != null) {
+            val sciPart = matchSci.groupValues[1]
+            sciPart.toDoubleOrNull()?.let { return it }
+        }
+
+        // 3. Extract leading numeric part for traditional SPICE suffix multipliers
         val sbNum = StringBuilder()
         var hasDecimal = false
         var index = 0
