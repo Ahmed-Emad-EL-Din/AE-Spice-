@@ -107,6 +107,12 @@ fun SchematicWorkspace(
     var lastTapTime by remember { mutableStateOf(0L) }
     var lastTapPosition by remember { mutableStateOf(Offset.Zero) }
 
+    var isSingleComponentDragActive by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedComponent) {
+        isSingleComponentDragActive = false
+    }
+
     // Updated states to avoid recreation of high-frequency pointerInput blocks
     val currentActiveTool by rememberUpdatedState(activeTool)
     val currentPlacingType by rememberUpdatedState(placingType)
@@ -116,6 +122,10 @@ fun SchematicWorkspace(
     val currentSimResult by rememberUpdatedState(simResult)
     val currentScrollOffsetX by rememberUpdatedState(scrollOffsetX)
     val currentScrollOffsetY by rememberUpdatedState(scrollOffsetY)
+    val currentIsMultiSelectMode by rememberUpdatedState(isMultiSelectMode)
+    val currentOnMultiSelectModeChange by rememberUpdatedState(onMultiSelectModeChange)
+    val currentOnShowMultiSelectActionsChange by rememberUpdatedState(onShowMultiSelectActionsChange)
+    val currentOnPushHistoryState by rememberUpdatedState(onPushHistoryState)
 
     val currentOnSelectComponent by rememberUpdatedState(onSelectComponent)
     val currentOnAddComponent by rememberUpdatedState(onAddComponent)
@@ -195,14 +205,16 @@ fun SchematicWorkspace(
                             if (!isPinching && (lastPosition - downChange.position).getDistance() < 15f) {
                                 isLongPressTriggered = true
                                 if (initialTouchedComp != null) {
-                                    if (!isMultiSelectMode) {
-                                        onMultiSelectModeChange(true)
+                                    if (isSingleComponentDragActive && selectedComponent?.id == initialTouchedComp!!.id) {
+                                        // Single-component drag mode is active, do not enter multi-select mode
+                                    } else if (!currentIsMultiSelectMode) {
+                                        currentOnMultiSelectModeChange(true)
                                         multiSelectedComponents.clear()
                                         multiSelectedComponents.add(initialTouchedComp!!)
-                                        onShowMultiSelectActionsChange(true)
+                                        currentOnShowMultiSelectActionsChange(true)
                                     } else {
                                         if (multiSelectedComponents.any { it.id == initialTouchedComp!!.id }) {
-                                            onShowMultiSelectActionsChange(true)
+                                            currentOnShowMultiSelectActionsChange(true)
                                         }
                                     }
                                 }
@@ -229,7 +241,7 @@ fun SchematicWorkspace(
                                     if (isTap) {
                                         val gp = pxToGrid(downChange.position.x, downChange.position.y)
                                         val curTime = System.currentTimeMillis()
-                                        val isDoubleTap = !isMultiSelectMode && (curTime - lastTapTime < 300L) && 
+                                        val isDoubleTap = !currentIsMultiSelectMode && (curTime - lastTapTime < 300L) && 
                                             (downChange.position - lastTapPosition).getDistance() < 30f
 
                                         if (isDoubleTap) {
@@ -244,20 +256,20 @@ fun SchematicWorkspace(
                                             lastTapTime = curTime
                                             lastTapPosition = downChange.position
  
-                                            val tappedCompForMultiSelect = if (isMultiSelectMode) {
+                                            val tappedCompForMultiSelect = if (currentIsMultiSelectMode) {
                                                 currentComponents.find { comp ->
                                                     val dist = abs(comp.gridX - gp.x) + abs(comp.gridY - gp.y)
                                                     dist <= 1
                                                 }
                                             } else null
 
-                                            if (isMultiSelectMode && tappedCompForMultiSelect != null) {
+                                            if (currentIsMultiSelectMode && tappedCompForMultiSelect != null) {
                                                 val alreadySelIdx = multiSelectedComponents.indexOfFirst { it.id == tappedCompForMultiSelect.id }
                                                 if (alreadySelIdx != -1) {
                                                     multiSelectedComponents.removeAt(alreadySelIdx)
                                                     if (multiSelectedComponents.isEmpty()) {
-                                                        onMultiSelectModeChange(false)
-                                                        onShowMultiSelectActionsChange(false)
+                                                        currentOnMultiSelectModeChange(false)
+                                                        currentOnShowMultiSelectActionsChange(false)
                                                     }
                                                 } else {
                                                     multiSelectedComponents.add(tappedCompForMultiSelect)
@@ -284,14 +296,14 @@ fun SchematicWorkspace(
                                                     val dist = abs(comp.gridX - gp.x) + abs(comp.gridY - gp.y)
                                                     dist <= 1
                                                 }
-                                                if (isMultiSelectMode) {
+                                                if (currentIsMultiSelectMode) {
                                                     if (tappedComp != null) {
                                                         val alreadySelIdx = multiSelectedComponents.indexOfFirst { it.id == tappedComp.id }
                                                         if (alreadySelIdx != -1) {
                                                             multiSelectedComponents.removeAt(alreadySelIdx)
                                                             if (multiSelectedComponents.isEmpty()) {
-                                                                onMultiSelectModeChange(false)
-                                                                onShowMultiSelectActionsChange(false)
+                                                                currentOnMultiSelectModeChange(false)
+                                                                currentOnShowMultiSelectActionsChange(false)
                                                             }
                                                         } else {
                                                             multiSelectedComponents.add(tappedComp)
@@ -395,6 +407,7 @@ fun SchematicWorkspace(
                                 }
                                 dragConnectStart = null
                                 dragConnectCurrentPos = null
+                                isSingleComponentDragActive = false
                                 break
                             }
 
@@ -431,40 +444,50 @@ fun SchematicWorkspace(
                                             dragConnectCurrentPos = change.position
                                         } else if (initialTouchedComp != null) {
                                             val currentGP = pxToGrid(change.position.x, change.position.y)
-                                            if (isMultiSelectMode && (multiSelectedComponents.any { it.id == initialTouchedComp!!.id } || multiSelectedComponents.add(initialTouchedComp!!))) {
-                                                val dx = currentGP.x - initialTouchedComp!!.gridX
-                                                val dy = currentGP.y - initialTouchedComp!!.gridY
-                                                if (dx != 0 || dy != 0) {
-                                                    onPushHistoryState()
-                                                    val movedComponents = multiSelectedComponents.map { oldComp ->
-                                                        val updatedComp = oldComp.copy(gridX = oldComp.gridX + dx, gridY = oldComp.gridY + dy)
-                                                        onUpdateComponent(oldComp, updatedComp)
-                                                        updatedComp
+                                            if (currentIsMultiSelectMode) {
+                                                if (isLongPressTriggered && multiSelectedComponents.any { it.id == initialTouchedComp!!.id }) {
+                                                    val dx = currentGP.x - initialTouchedComp!!.gridX
+                                                    val dy = currentGP.y - initialTouchedComp!!.gridY
+                                                    if (dx != 0 || dy != 0) {
+                                                        currentOnPushHistoryState()
+                                                        val movedComponents = multiSelectedComponents.map { oldComp ->
+                                                            val updatedComp = oldComp.copy(gridX = oldComp.gridX + dx, gridY = oldComp.gridY + dy)
+                                                            onUpdateComponent(oldComp, updatedComp)
+                                                            updatedComp
+                                                        }
+                                                        multiSelectedComponents.clear()
+                                                        multiSelectedComponents.addAll(movedComponents)
+                                                        
+                                                        val selectedPins = movedComponents.flatMap { it.getPins() }.toSet()
+                                                        val selWires = currentWires.filter { wire ->
+                                                            selectedPins.any { it.x == wire.start.x && it.y == wire.start.y } &&
+                                                            selectedPins.any { it.x == wire.end.x && it.y == wire.end.y }
+                                                        }
+                                                        selWires.forEach { w ->
+                                                            val updatedWire = w.copy(
+                                                                id = "W_drag_${System.currentTimeMillis()}_${(Math.random()*1000).toInt()}",
+                                                                start = GridPoint(w.start.x + dx, w.start.y + dy),
+                                                                end = GridPoint(w.end.x + dx, w.end.y + dy)
+                                                            )
+                                                            currentOnDeleteWire(w)
+                                                            currentOnAddWire(updatedWire)
+                                                        }
+                                                        initialTouchedComp = initialTouchedComp!!.copy(gridX = initialTouchedComp!!.gridX + dx, gridY = initialTouchedComp!!.gridY + dy)
                                                     }
-                                                    multiSelectedComponents.clear()
-                                                    multiSelectedComponents.addAll(movedComponents)
-                                                    
-                                                    val selectedPins = movedComponents.flatMap { it.getPins() }.toSet()
-                                                    val selWires = currentWires.filter { wire ->
-                                                        selectedPins.any { it.x == wire.start.x && it.y == wire.start.y } &&
-                                                        selectedPins.any { it.x == wire.end.x && it.y == wire.end.y }
-                                                    }
-                                                    selWires.forEach { w ->
-                                                        val updatedWire = w.copy(
-                                                            id = "W_drag_${System.currentTimeMillis()}_${(Math.random()*1000).toInt()}",
-                                                            start = GridPoint(w.start.x + dx, w.start.y + dy),
-                                                            end = GridPoint(w.end.x + dx, w.end.y + dy)
-                                                        )
-                                                        currentOnDeleteWire(w)
-                                                        currentOnAddWire(updatedWire)
-                                                    }
-                                                    initialTouchedComp = initialTouchedComp!!.copy(gridX = initialTouchedComp!!.gridX + dx, gridY = initialTouchedComp!!.gridY + dy)
+                                                } else {
+                                                    scrollOffsetX += dragAmount.x
+                                                    scrollOffsetY += dragAmount.y
                                                 }
                                             } else {
-                                                if (initialTouchedComp!!.gridX != currentGP.x || initialTouchedComp!!.gridY != currentGP.y) {
-                                                    val updatedComp = initialTouchedComp!!.copy(gridX = currentGP.x, gridY = currentGP.y)
-                                                    onUpdateComponent(initialTouchedComp!!, updatedComp)
-                                                    initialTouchedComp = updatedComp
+                                                if (isSingleComponentDragActive && isLongPressTriggered && selectedComponent?.id == initialTouchedComp!!.id) {
+                                                    if (initialTouchedComp!!.gridX != currentGP.x || initialTouchedComp!!.gridY != currentGP.y) {
+                                                        val updatedComp = initialTouchedComp!!.copy(gridX = currentGP.x, gridY = currentGP.y)
+                                                        onUpdateComponent(initialTouchedComp!!, updatedComp)
+                                                        initialTouchedComp = updatedComp
+                                                    }
+                                                } else {
+                                                    scrollOffsetX += dragAmount.x
+                                                    scrollOffsetY += dragAmount.y
                                                 }
                                             }
                                         } else {
@@ -710,8 +733,8 @@ fun SchematicWorkspace(
             
             Card(
                 modifier = Modifier
-                    .offset(x = cxDp - 100.dp, y = cyDp - 80.dp)
-                    .width(200.dp)
+                    .offset(x = cxDp - 120.dp, y = cyDp - 80.dp)
+                    .width(240.dp)
                     .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
                 elevation = CardDefaults.cardElevation(8.dp),
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF202124))
@@ -748,6 +771,29 @@ fun SchematicWorkspace(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(Icons.Default.Edit, contentDescription = "Value", tint = Color.White, modifier = Modifier.size(18.dp))
                             Text("Value", fontSize = 9.sp, color = Color.LightGray)
+                        }
+                    }
+
+                    IconButton(
+                        onClick = {
+                            isSingleComponentDragActive = !isSingleComponentDragActive
+                            if (isSingleComponentDragActive) {
+                                Toast.makeText(context, "Drag mode active. Long touch & move component to reposition it.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.Build, 
+                                contentDescription = "Drag", 
+                                tint = if (isSingleComponentDragActive) Color(0xFF38BDF8) else Color.White, 
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Drag", 
+                                fontSize = 9.sp, 
+                                color = if (isSingleComponentDragActive) Color(0xFF38BDF8) else Color.LightGray
+                            )
                         }
                     }
 
@@ -866,10 +912,10 @@ fun SchematicWorkspace(
                         newComps.forEach { currentOnAddComponent(it) }
                         newWires.forEach { currentOnAddWire(it) }
                         
-                        onMultiSelectModeChange(true)
+                        currentOnMultiSelectModeChange(true)
                         multiSelectedComponents.clear()
                         multiSelectedComponents.addAll(newComps)
-                        onShowMultiSelectActionsChange(true)
+                        currentOnShowMultiSelectActionsChange(true)
                         
                         Toast.makeText(context, "Pasted ${newComps.size} elements", Toast.LENGTH_SHORT).show()
                     },

@@ -1438,18 +1438,7 @@ fun SpiceAppUi() {
                                 }
                             }
                             
-                            // Drag Indicator Instruction Trigger
-                            IconButton(
-                                onClick = {
-                                    Toast.makeText(context, "Drag any selected component to slide/move them", Toast.LENGTH_LONG).show()
-                                }
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.Build, contentDescription = "Drag Tool Instruction", tint = Color.White, modifier = Modifier.size(20.dp))
-                                    Text("Drag", fontSize = 8.sp, color = Color.LightGray)
-                                }
-                            }
-                            
+
                             // Delete
                             IconButton(
                                 onClick = {

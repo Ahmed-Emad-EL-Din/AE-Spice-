@@ -85,7 +85,7 @@ fun DraggableFloatingWindow(
                 // Consume all touch events inside the window body to prevent leaks to canvas
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Main)
+                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Final)
                         event.changes.forEach { 
                            if (!it.isConsumed) {
                                it.consume()
