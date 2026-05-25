@@ -342,3 +342,50 @@ data class SimResult(
     val currents: Map<String, List<Double>> = emptyMap(), // Component/source name -> currents
     val nodeIndexes: Map<String, Int> = emptyMap() // Map string name to MNA index for reference
 )
+
+class SpiceParameters(val rawStr: String) {
+    private val params = mutableMapOf<String, Double>()
+    var mainValue: Double = 0.0
+        private set
+
+    init {
+        var cleanStr = rawStr.trim()
+        val lower = cleanStr.lowercase()
+        // If it starts with SINE or PULSE, skip past the function arguments to avoid parsing them parameter-wise
+        val hasFunc = lower.startsWith("sine(") || lower.startsWith("pulse(")
+        if (hasFunc) {
+            val idx = cleanStr.indexOf('(')
+            val endIdx = cleanStr.lastIndexOf(')')
+            if (idx != -1 && endIdx != -1) {
+                cleanStr = cleanStr.substring(endIdx + 1).trim()
+            }
+        }
+
+        val firstWord = cleanStr.split("\\s+".toRegex()).firstOrNull() ?: ""
+        if (firstWord.isNotEmpty() && !firstWord.contains("=")) {
+            if (firstWord.firstOrNull()?.let { it.isDigit() || it == '.' || it == '-' } == true) {
+                mainValue = SpiceUtils.parseValue(firstWord)
+            } else {
+                mainValue = 1.0
+            }
+        } else {
+            mainValue = 1.0
+        }
+
+        val regex = """([a-zA-Z0-9_]+)\s*=\s*([+\-a-zA-Z0-9_.eEμuμkpnmfgt]+)""".toRegex()
+        regex.findAll(cleanStr).forEach { match ->
+            val key = match.groupValues[1].lowercase()
+            val valStr = match.groupValues[2]
+            params[key] = SpiceUtils.parseValue(valStr)
+        }
+    }
+
+    fun getDouble(key: String, default: Double): Double {
+        return params[key] ?: default
+    }
+
+    fun getBoolean(key: String, default: Boolean): Boolean {
+        val d = params[key]
+        return if (d != null) d != 0.0 else default
+    }
+}

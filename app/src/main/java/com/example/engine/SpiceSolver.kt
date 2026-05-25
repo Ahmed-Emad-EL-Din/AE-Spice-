@@ -246,16 +246,17 @@ class SpiceSolver {
 
                 components.forEach { comp ->
                     val cPins = comp.getPins()
+                    val p = SpiceParameters(comp.valueStr)
                     when (comp.type) {
                         ComponentType.RESISTOR -> {
-                            val rVal = maxOf(1e-6, SpiceUtils.parseValue(comp.valueStr))
+                            val rVal = maxOf(1e-9, p.getDouble("r", p.mainValue))
                             val G = 1.0 / rVal
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             stampConductance(A, nA, nB, G)
                         }
                         ComponentType.CAPACITOR -> {
-                            val cVal = SpiceUtils.parseValue(comp.valueStr)
+                            val cVal = maxOf(1e-20, p.getDouble("c", p.mainValue))
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val G = cVal / stepTime
@@ -266,7 +267,7 @@ class SpiceSolver {
                             stampCurrentSource(B, nA, nB, Ieq)
                         }
                         ComponentType.INDUCTOR -> {
-                            val lVal = maxOf(1e-12, SpiceUtils.parseValue(comp.valueStr))
+                            val lVal = maxOf(1e-20, p.getDouble("l", p.mainValue))
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val G = stepTime / lVal
@@ -276,7 +277,7 @@ class SpiceSolver {
                             stampCurrentSource(B, nA, nB, iPrev)
                         }
                         ComponentType.CURRENT_SOURCE -> {
-                            val iVal = SpiceUtils.parseValue(comp.valueStr)
+                            val iVal = p.getDouble("dc", p.mainValue)
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             stampCurrentSource(B, nA, nB, iVal)
@@ -285,9 +286,9 @@ class SpiceSolver {
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             
-                            val Is = 1e-14
-                            val Vt = 0.02585
-                            val n = 1.0
+                            val Is = p.getDouble("is", 1e-14)
+                            val Vt = p.getDouble("vt", 0.02585)
+                            val n = p.getDouble("n", p.getDouble("ncoef", 1.0))
 
                             val vdPrev = diodeVoltages[comp.id] ?: 0.6
                             val vdChecked = minOf(0.85, maxOf(-10.0, vdPrev))
@@ -305,9 +306,9 @@ class SpiceSolver {
                             val nC = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nE = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            val Is = 1e-14
-                            val Vt = 0.02585
-                            val beta = 100.0
+                            val Is = p.getDouble("is", 1e-14)
+                            val Vt = p.getDouble("vt", 0.02585)
+                            val beta = p.getDouble("bf", p.getDouble("beta", 100.0))
 
                             val prevVbe = bjtVoltagesBE[comp.id] ?: 0.6
                             val vbeChecked = minOf(0.85, maxOf(-10.0, prevVbe))
@@ -335,8 +336,8 @@ class SpiceSolver {
                             val nD = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nS = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            val Vth = 2.0
-                            val betaMos = 1e-3
+                            val Vth = p.getDouble("vto", p.getDouble("vth", p.getDouble("vth_n", 2.0)))
+                            val betaMos = p.getDouble("kp", p.getDouble("betamos", 1e-3))
 
                             val prevVgs = mosVoltagesGS[comp.id] ?: 0.0
                             val prevVds = mosVoltagesDS[comp.id] ?: 0.0
@@ -378,13 +379,17 @@ class SpiceSolver {
                             val nK = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nG, nK, 1e-5)
+                            val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                            val rOn = p.getDouble("ron", 1.0)
+                            val rOff = p.getDouble("roff", 1e7)
+
+                            stampConductance(A, nG, nK, 1.0 / rGate)
 
                             val latched = thyristorLatched[comp.id] ?: false
                             if (latched) {
-                                stampConductance(A, nANode, nK, 1.0)
+                                stampConductance(A, nANode, nK, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nANode, nK, 1e-7)
+                                stampConductance(A, nANode, nK, 1.0 / rOff)
                             }
                         }
                         ComponentType.TRIAC -> {
@@ -392,13 +397,17 @@ class SpiceSolver {
                             val nMT2 = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nG, nMT1, 1e-5)
+                            val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                            val rOn = p.getDouble("ron", 1.0)
+                            val rOff = p.getDouble("roff", 1e7)
+
+                            stampConductance(A, nG, nMT1, 1.0 / rGate)
 
                             val latched = triacLatched[comp.id] ?: false
                             if (latched) {
-                                stampConductance(A, nMT2, nMT1, 1.0)
+                                stampConductance(A, nMT2, nMT1, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nMT2, nMT1, 1e-7)
+                                stampConductance(A, nMT2, nMT1, 1.0 / rOff)
                             }
                         }
                         ComponentType.RELAY -> {
@@ -407,16 +416,21 @@ class SpiceSolver {
                             val nS1 = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
                             val nS2 = if (cPins.size > 3) ptToNode[cPins[3]] ?: 0 else 0
 
-                            stampConductance(A, nC1, nC2, 1.0 / 100.0)
+                            val rCoil = p.getDouble("rcoil", p.getDouble("rc", 100.0))
+                            val rOn = p.getDouble("ron", 0.1)
+                            val rOff = p.getDouble("roff", 1e7)
+                            val vTrigger = p.getDouble("vtrigger", p.getDouble("vt", 3.0))
+
+                            stampConductance(A, nC1, nC2, 1.0 / rCoil)
 
                             val vC1Val = if (nC1 > 0) solvedX.getOrElse(nC1 - 1) { 0.0 } else 0.0
                             val vC2Val = if (nC2 > 0) solvedX.getOrElse(nC2 - 1) { 0.0 } else 0.0
-                            val coilActive = abs(vC1Val - vC2Val) > 3.0
+                            val coilActive = abs(vC1Val - vC2Val) > vTrigger
 
                             if (coilActive) {
-                                stampConductance(A, nS1, nS2, 10.0)
+                                stampConductance(A, nS1, nS2, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nS1, nS2, 1e-7)
+                                stampConductance(A, nS1, nS2, 1.0 / rOff)
                             }
                         }
                         ComponentType.OPAMP -> {
@@ -424,17 +438,23 @@ class SpiceSolver {
                             val nNon = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nOut = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nOut, 0, 0.02)
+                            val rOut = p.getDouble("rout", p.getDouble("ro", 50.0))
+                            val gain = p.getDouble("gain", p.getDouble("a", 100000.0))
+                            val vMax = p.getDouble("vmax", p.getDouble("vsat", 12.0))
+
+                            stampConductance(A, nOut, 0, 1.0 / rOut)
 
                             val prevVdiff = opampVoltagesDiff[comp.id] ?: 0.0
-                            val Istamp = minOf(0.24, maxOf(-0.24, 2000.0 * prevVdiff))
+                            val Gm = gain / rOut
+                            val limitI = vMax / rOut
+                            val Istamp = minOf(limitI, maxOf(-limitI, Gm * prevVdiff))
                             stampCurrentSource(B, 0, nOut, Istamp)
                         }
                         else -> {}
                     }
                 }
 
-                vSources.forEachIndexed { idx, vsrc ->
+                 vSources.forEachIndexed { idx, vsrc ->
                     val cPins = vsrc.getPins()
                     val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                     val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
@@ -507,11 +527,15 @@ class SpiceSolver {
                             val vgk = vG - vK
                             val vak = vA - vK
 
+                            val p = SpiceParameters(comp.valueStr)
+                            val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                            val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                             val latched = thyristorLatched[comp.id] ?: false
-                            if (!latched && vgk > 0.7 && vak > 0.5) {
+                            if (!latched && vgk > vgt && vak > 0.5) {
                                 thyristorLatched[comp.id] = true
                                 allDevicesConverged = false
-                            } else if (latched && vak < 0.1) {
+                            } else if (latched && vak < vhold) {
                                 thyristorLatched[comp.id] = false
                                 allDevicesConverged = false
                             }
@@ -528,11 +552,15 @@ class SpiceSolver {
                             val vg_mt1 = vG - vMT1
                             val vmt2_mt1 = vMT2 - vMT1
 
+                            val p = SpiceParameters(comp.valueStr)
+                            val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                            val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                             val latched = triacLatched[comp.id] ?: false
-                            if (!latched && abs(vg_mt1) > 0.7 && abs(vmt2_mt1) > 0.5) {
+                            if (!latched && abs(vg_mt1) > vgt && abs(vmt2_mt1) > 0.5) {
                                 triacLatched[comp.id] = true
                                 allDevicesConverged = false
-                            } else if (latched && abs(vmt2_mt1) < 0.1) {
+                            } else if (latched && abs(vmt2_mt1) < vhold) {
                                 triacLatched[comp.id] = false
                                 allDevicesConverged = false
                             }
@@ -581,7 +609,8 @@ class SpiceSolver {
                         capacitorVoltages[comp.id] = vComp
                     }
                     ComponentType.INDUCTOR -> {
-                        val lVal = maxOf(1e-12, SpiceUtils.parseValue(comp.valueStr))
+                        val p = SpiceParameters(comp.valueStr)
+                        val lVal = maxOf(1e-20, p.getDouble("l", p.mainValue))
                         val prevI = inductorCurrents[comp.id] ?: 0.0
                         val deltaI = (stepTime / lVal) * vComp
                         inductorCurrents[comp.id] = prevI + deltaI
@@ -670,9 +699,10 @@ class SpiceSolver {
 
             components.forEach { comp ->
                 val cPins = comp.getPins()
+                val p = SpiceParameters(comp.valueStr)
                 when (comp.type) {
                     ComponentType.RESISTOR -> {
-                        val rVal = maxOf(1e-6, SpiceUtils.parseValue(comp.valueStr))
+                        val rVal = maxOf(1e-9, p.getDouble("r", p.mainValue))
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         stampConductance(A, nA, nB, 1.0 / rVal)
@@ -688,7 +718,7 @@ class SpiceSolver {
                         stampConductance(A, nA, nB, 1e6) 
                     }
                     ComponentType.CURRENT_SOURCE -> {
-                        val iVal = SpiceUtils.parseValue(comp.valueStr)
+                        val iVal = p.getDouble("dc", p.mainValue)
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         stampCurrentSource(B, nA, nB, iVal)
@@ -697,9 +727,9 @@ class SpiceSolver {
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         
-                        val Is = 1e-14
-                        val Vt = 0.02585
-                        val n = 1.0
+                        val Is = p.getDouble("is", 1e-14)
+                        val Vt = p.getDouble("vt", 0.02585)
+                        val n = p.getDouble("n", p.getDouble("ncoef", 1.0))
 
                         val vdPrev = diodeVoltages[comp.id] ?: 0.6
                         val vdChecked = minOf(0.85, maxOf(-10.0, vdPrev))
@@ -717,9 +747,9 @@ class SpiceSolver {
                         val nC = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nE = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                        val Is = 1e-14
-                        val Vt = 0.02585
-                        val beta = 100.0
+                        val Is = p.getDouble("is", 1e-14)
+                        val Vt = p.getDouble("vt", 0.02585)
+                        val beta = p.getDouble("bf", p.getDouble("beta", 100.0))
 
                         val prevVbe = bjtVoltagesBE[comp.id] ?: 0.6
                         val vbeChecked = minOf(0.85, maxOf(-10.0, prevVbe))
@@ -747,8 +777,8 @@ class SpiceSolver {
                         val nD = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nS = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                        val Vth = 2.0
-                        val betaMos = 1e-3
+                        val Vth = p.getDouble("vto", p.getDouble("vth", p.getDouble("vth_n", 2.0)))
+                        val betaMos = p.getDouble("kp", p.getDouble("betamos", 1e-3))
 
                         val prevVgs = mosVoltagesGS[comp.id] ?: 0.0
                         val prevVds = mosVoltagesDS[comp.id] ?: 0.0
@@ -790,13 +820,17 @@ class SpiceSolver {
                         val nK = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                        stampConductance(A, nG, nK, 1e-5)
+                        val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                        val rOn = p.getDouble("ron", 1.0)
+                        val rOff = p.getDouble("roff", 1e7)
+
+                        stampConductance(A, nG, nK, 1.0 / rGate)
 
                         val latched = thyristorLatched[comp.id] ?: false
                         if (latched) {
-                            stampConductance(A, nANode, nK, 1.0)
+                            stampConductance(A, nANode, nK, 1.0 / rOn)
                         } else {
-                            stampConductance(A, nANode, nK, 1e-7)
+                            stampConductance(A, nANode, nK, 1.0 / rOff)
                         }
                     }
                     ComponentType.TRIAC -> {
@@ -804,13 +838,17 @@ class SpiceSolver {
                         val nMT2 = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                        stampConductance(A, nG, nMT1, 1e-5)
+                        val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                        val rOn = p.getDouble("ron", 1.0)
+                        val rOff = p.getDouble("roff", 1e7)
+
+                        stampConductance(A, nG, nMT1, 1.0 / rGate)
 
                         val latched = triacLatched[comp.id] ?: false
                         if (latched) {
-                            stampConductance(A, nMT2, nMT1, 1.0)
+                            stampConductance(A, nMT2, nMT1, 1.0 / rOn)
                         } else {
-                            stampConductance(A, nMT2, nMT1, 1e-7)
+                            stampConductance(A, nMT2, nMT1, 1.0 / rOff)
                         }
                     }
                     ComponentType.RELAY -> {
@@ -819,16 +857,21 @@ class SpiceSolver {
                         val nS1 = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
                         val nS2 = if (cPins.size > 3) ptToNode[cPins[3]] ?: 0 else 0
 
-                        stampConductance(A, nC1, nC2, 1.0 / 100.0)
+                        val rCoil = p.getDouble("rcoil", p.getDouble("rc", 100.0))
+                        val rOn = p.getDouble("ron", 0.1)
+                        val rOff = p.getDouble("roff", 1e7)
+                        val vTrigger = p.getDouble("vtrigger", p.getDouble("vt", 3.0))
+
+                        stampConductance(A, nC1, nC2, 1.0 / rCoil)
 
                         val vC1Val = if (nC1 > 0) solvedX.getOrElse(nC1 - 1) { 0.0 } else 0.0
                         val vC2Val = if (nC2 > 0) solvedX.getOrElse(nC2 - 1) { 0.0 } else 0.0
-                        val coilActive = abs(vC1Val - vC2Val) > 3.0
+                        val coilActive = abs(vC1Val - vC2Val) > vTrigger
 
                         if (coilActive) {
-                            stampConductance(A, nS1, nS2, 10.0)
+                            stampConductance(A, nS1, nS2, 1.0 / rOn)
                         } else {
-                            stampConductance(A, nS1, nS2, 1e-7)
+                            stampConductance(A, nS1, nS2, 1.0 / rOff)
                         }
                     }
                     ComponentType.OPAMP -> {
@@ -836,10 +879,16 @@ class SpiceSolver {
                         val nNon = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nOut = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                        stampConductance(A, nOut, 0, 0.02)
+                        val rOut = p.getDouble("rout", p.getDouble("ro", 50.0))
+                        val gain = p.getDouble("gain", p.getDouble("a", 100000.0))
+                        val vMax = p.getDouble("vmax", p.getDouble("vsat", 12.0))
+
+                        stampConductance(A, nOut, 0, 1.0 / rOut)
 
                         val prevVdiff = opampVoltagesDiff[comp.id] ?: 0.0
-                        val Istamp = minOf(0.24, maxOf(-0.24, 2000.0 * prevVdiff))
+                        val Gm = gain / rOut
+                        val limitI = vMax / rOut
+                        val Istamp = minOf(limitI, maxOf(-limitI, Gm * prevVdiff))
                         stampCurrentSource(B, 0, nOut, Istamp)
                     }
                     else -> {}
@@ -918,11 +967,15 @@ class SpiceSolver {
                         val vgk = vG - vK
                         val vak = vA - vK
 
+                        val p = SpiceParameters(comp.valueStr)
+                        val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                        val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                         val latched = thyristorLatched[comp.id] ?: false
-                        if (!latched && vgk > 0.7 && vak > 0.5) {
+                        if (!latched && vgk > vgt && vak > 0.5) {
                             thyristorLatched[comp.id] = true
                             allDevicesConverged = false
-                        } else if (latched && vak < 0.1) {
+                        } else if (latched && vak < vhold) {
                             thyristorLatched[comp.id] = false
                             allDevicesConverged = false
                         }
@@ -939,11 +992,15 @@ class SpiceSolver {
                         val vg_mt1 = vG - vMT1
                         val vmt2_mt1 = vMT2 - vMT1
 
+                        val p = SpiceParameters(comp.valueStr)
+                        val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                        val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                         val latched = triacLatched[comp.id] ?: false
-                        if (!latched && abs(vg_mt1) > 0.7 && abs(vmt2_mt1) > 0.5) {
+                        if (!latched && abs(vg_mt1) > vgt && abs(vmt2_mt1) > 0.5) {
                             triacLatched[comp.id] = true
                             allDevicesConverged = false
-                        } else if (latched && abs(vmt2_mt1) < 0.1) {
+                        } else if (latched && abs(vmt2_mt1) < vhold) {
                             triacLatched[comp.id] = false
                             allDevicesConverged = false
                         }
@@ -1040,29 +1097,30 @@ class SpiceSolver {
 
             components.forEach { comp ->
                 val cPins = comp.getPins()
+                val p = SpiceParameters(comp.valueStr)
                 when (comp.type) {
                     ComponentType.RESISTOR -> {
-                        val rVal = maxOf(1e-6, SpiceUtils.parseValue(comp.valueStr))
+                        val rVal = maxOf(1e-9, p.getDouble("r", p.mainValue))
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         stampComplexConductance(A, nA, nB, Complex(1.0 / rVal, 0.0))
                     }
                     ComponentType.CAPACITOR -> {
-                        val cVal = SpiceUtils.parseValue(comp.valueStr)
+                        val cVal = p.getDouble("c", p.mainValue)
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val admittance = Complex(0.0, omega * cVal)
                         stampComplexConductance(A, nA, nB, admittance)
                     }
                     ComponentType.INDUCTOR -> {
-                        val lVal = maxOf(1e-12, SpiceUtils.parseValue(comp.valueStr))
+                        val lVal = maxOf(1e-20, p.getDouble("l", p.mainValue))
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val admittance = Complex(0.0, -1.0 / (omega * lVal))
                         stampComplexConductance(A, nA, nB, admittance)
                     }
                     ComponentType.CURRENT_SOURCE -> {
-                        val iVal = SpiceUtils.parseValue(comp.valueStr)
+                        val iVal = p.getDouble("ac", p.getDouble("dc", p.mainValue))
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         stampComplexCurrentSource(B, nA, nB, Complex(iVal, 0.0))
@@ -1070,17 +1128,19 @@ class SpiceSolver {
                     ComponentType.DIODE -> {
                         val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
-                        val Is = 1e-14
-                        val Vt = 0.02585
-                        val Gd = (Is / Vt) * Math.exp(0.6 / Vt)
+                        val Is = p.getDouble("is", 1e-14)
+                        val Vt = p.getDouble("vt", 0.02585)
+                        val n = p.getDouble("n", p.getDouble("ncoef", 1.0))
+                        val Gd = (Is / (n * Vt)) * Math.exp(0.6 / (n * Vt))
                         stampComplexConductance(A, nA, nB, Complex(Gd, 0.0))
                     }
                     ComponentType.TRANSISTOR_NPN -> {
                         val nB = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nC = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nE = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
-                        stampComplexConductance(A, nB, nE, Complex(1.0 / 1000.0, 0.0))
-                        val gm = 0.04
+                        val beta = p.getDouble("bf", p.getDouble("beta", 100.0))
+                        val gm = p.getDouble("gm", 0.04)
+                        stampComplexConductance(A, nB, nE, Complex(1.0 / (25.0 * beta), 0.0))
                         if (nC > 0) {
                             if (nB > 0) A[nC - 1][nB - 1] = A[nC - 1][nB - 1] + Complex(gm, 0.0)
                             if (nE > 0) A[nC - 1][nE - 1] = A[nC - 1][nE - 1] - Complex(gm, 0.0)
@@ -1094,7 +1154,7 @@ class SpiceSolver {
                         val nG = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nD = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nS = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
-                        val gm = 0.002
+                        val gm = p.getDouble("gm", p.getDouble("kp", 0.002))
                         if (nD > 0) {
                             if (nG > 0) A[nD - 1][nG - 1] = A[nD - 1][nG - 1] + Complex(gm, 0.0)
                             if (nS > 0) A[nD - 1][nS - 1] = A[nD - 1][nS - 1] - Complex(gm, 0.0)
@@ -1112,14 +1172,17 @@ class SpiceSolver {
                     ComponentType.RELAY -> {
                         val nCol1 = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nCol2 = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
-                        stampComplexConductance(A, nCol1, nCol2, Complex(0.01, 0.0))
+                        val rCoil = p.getDouble("rcoil", p.getDouble("rc", 100.0))
+                        stampComplexConductance(A, nCol1, nCol2, Complex(1.0 / rCoil, 0.0))
                     }
                     ComponentType.OPAMP -> {
                         val nInv = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                         val nNon = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                         val nOut = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
-                        stampComplexConductance(A, nOut, 0, Complex(0.02, 0.0))
-                        val gm = 2000.0
+                        val rOut = p.getDouble("rout", p.getDouble("ro", 50.0))
+                        val gain = p.getDouble("gain", p.getDouble("a", 100000.0))
+                        val gm = gain / rOut
+                        stampComplexConductance(A, nOut, 0, Complex(1.0 / rOut, 0.0))
                         if (nOut > 0) {
                             if (nNon > 0) A[nOut - 1][nNon - 1] = A[nOut - 1][nNon - 1] + Complex(gm, 0.0)
                             if (nInv > 0) A[nOut - 1][nInv - 1] = A[nOut - 1][nInv - 1] - Complex(gm, 0.0)
@@ -1237,9 +1300,10 @@ class SpiceSolver {
 
                 components.forEach { comp ->
                     val cPins = comp.getPins()
+                    val p = SpiceParameters(comp.valueStr)
                     when (comp.type) {
                         ComponentType.RESISTOR -> {
-                            val rVal = maxOf(1e-6, SpiceUtils.parseValue(comp.valueStr))
+                            val rVal = maxOf(1e-9, p.getDouble("r", p.mainValue))
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             stampConductance(A, nA, nB, 1.0 / rVal)
@@ -1255,7 +1319,7 @@ class SpiceSolver {
                             stampConductance(A, nA, nB, 1e6)
                         }
                         ComponentType.CURRENT_SOURCE -> {
-                            val iVal = SpiceUtils.parseValue(comp.valueStr)
+                            val iVal = p.getDouble("dc", p.mainValue)
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             stampCurrentSource(B, nA, nB, iVal)
@@ -1264,9 +1328,9 @@ class SpiceSolver {
                             val nA = if (cPins.isNotEmpty()) ptToNode[cPins[0]] ?: 0 else 0
                             val nB = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             
-                            val Is = 1e-14
-                            val Vt = 0.02585
-                            val n = 1.0
+                            val Is = p.getDouble("is", 1e-14)
+                            val Vt = p.getDouble("vt", 0.02585)
+                            val n = p.getDouble("n", p.getDouble("ncoef", 1.0))
 
                             val vdPrev = diodeVoltages[comp.id] ?: 0.6
                             val vdChecked = minOf(0.85, maxOf(-10.0, vdPrev))
@@ -1284,9 +1348,9 @@ class SpiceSolver {
                             val nC = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nE = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            val Is = 1e-14
-                            val Vt = 0.02585
-                            val beta = 100.0
+                            val Is = p.getDouble("is", 1e-14)
+                            val Vt = p.getDouble("vt", 0.02585)
+                            val beta = p.getDouble("bf", p.getDouble("beta", 100.0))
 
                             val prevVbe = bjtVoltagesBE[comp.id] ?: 0.6
                             val vbeChecked = minOf(0.85, maxOf(-10.0, prevVbe))
@@ -1314,8 +1378,8 @@ class SpiceSolver {
                             val nD = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nS = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            val Vth = 2.0
-                            val betaMos = 1e-3
+                            val Vth = p.getDouble("vto", p.getDouble("vth", p.getDouble("vth_n", 2.0)))
+                            val betaMos = p.getDouble("kp", p.getDouble("betamos", 1e-3))
 
                             val prevVgs = mosVoltagesGS[comp.id] ?: 0.0
                             val prevVds = mosVoltagesDS[comp.id] ?: 0.0
@@ -1357,13 +1421,17 @@ class SpiceSolver {
                             val nK = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nG, nK, 1e-5)
+                            val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                            val rOn = p.getDouble("ron", 1.0)
+                            val rOff = p.getDouble("roff", 1e7)
+
+                            stampConductance(A, nG, nK, 1.0 / rGate)
 
                             val latched = thyristorLatched[comp.id] ?: false
                             if (latched) {
-                                stampConductance(A, nANode, nK, 1.0)
+                                stampConductance(A, nANode, nK, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nANode, nK, 1e-7)
+                                stampConductance(A, nANode, nK, 1.0 / rOff)
                             }
                         }
                         ComponentType.TRIAC -> {
@@ -1371,13 +1439,17 @@ class SpiceSolver {
                             val nMT2 = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nG = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nG, nMT1, 1e-5)
+                            val rGate = p.getDouble("rgate", p.getDouble("rg", 1e5))
+                            val rOn = p.getDouble("ron", 1.0)
+                            val rOff = p.getDouble("roff", 1e7)
+
+                            stampConductance(A, nG, nMT1, 1.0 / rGate)
 
                             val latched = triacLatched[comp.id] ?: false
                             if (latched) {
-                                stampConductance(A, nMT2, nMT1, 1.0)
+                                stampConductance(A, nMT2, nMT1, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nMT2, nMT1, 1e-7)
+                                stampConductance(A, nMT2, nMT1, 1.0 / rOff)
                             }
                         }
                         ComponentType.RELAY -> {
@@ -1386,16 +1458,21 @@ class SpiceSolver {
                             val nS1 = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
                             val nS2 = if (cPins.size > 3) ptToNode[cPins[3]] ?: 0 else 0
 
-                            stampConductance(A, nC1, nC2, 1.0 / 100.0)
+                            val rCoil = p.getDouble("rcoil", p.getDouble("rc", 100.0))
+                            val rOn = p.getDouble("ron", 0.1)
+                            val rOff = p.getDouble("roff", 1e7)
+                            val vTrigger = p.getDouble("vtrigger", p.getDouble("vt", 3.0))
+
+                            stampConductance(A, nC1, nC2, 1.0 / rCoil)
 
                             val vC1Val = if (nC1 > 0) solvedX.getOrElse(nC1 - 1) { 0.0 } else 0.0
                             val vC2Val = if (nC2 > 0) solvedX.getOrElse(nC2 - 1) { 0.0 } else 0.0
-                            val coilActive = abs(vC1Val - vC2Val) > 3.0
+                            val coilActive = abs(vC1Val - vC2Val) > vTrigger
 
                             if (coilActive) {
-                                stampConductance(A, nS1, nS2, 10.0)
+                                stampConductance(A, nS1, nS2, 1.0 / rOn)
                             } else {
-                                stampConductance(A, nS1, nS2, 1e-7)
+                                stampConductance(A, nS1, nS2, 1.0 / rOff)
                             }
                         }
                         ComponentType.OPAMP -> {
@@ -1403,10 +1480,16 @@ class SpiceSolver {
                             val nNon = if (cPins.size > 1) ptToNode[cPins[1]] ?: 0 else 0
                             val nOut = if (cPins.size > 2) ptToNode[cPins[2]] ?: 0 else 0
 
-                            stampConductance(A, nOut, 0, 0.02)
+                            val rOut = p.getDouble("rout", p.getDouble("ro", 50.0))
+                            val gain = p.getDouble("gain", p.getDouble("a", 100000.0))
+                            val vMax = p.getDouble("vmax", p.getDouble("vsat", 12.0))
+
+                            stampConductance(A, nOut, 0, 1.0 / rOut)
 
                             val prevVdiff = opampVoltagesDiff[comp.id] ?: 0.0
-                            val Istamp = minOf(0.24, maxOf(-0.24, 2000.0 * prevVdiff))
+                            val Gm = gain / rOut
+                            val limitI = vMax / rOut
+                            val Istamp = minOf(limitI, maxOf(-limitI, Gm * prevVdiff))
                             stampCurrentSource(B, 0, nOut, Istamp)
                         }
                         else -> {}
@@ -1496,11 +1579,15 @@ class SpiceSolver {
                             val vgk = vG - vK
                             val vak = vA - vK
 
+                            val p = SpiceParameters(comp.valueStr)
+                            val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                            val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                             val latched = thyristorLatched[comp.id] ?: false
-                            if (!latched && vgk > 0.7 && vak > 0.5) {
+                            if (!latched && vgk > vgt && vak > 0.5) {
                                 thyristorLatched[comp.id] = true
                                 allDevicesConverged = false
-                            } else if (latched && vak < 0.1) {
+                            } else if (latched && vak < vhold) {
                                 thyristorLatched[comp.id] = false
                                 allDevicesConverged = false
                             }
@@ -1517,11 +1604,15 @@ class SpiceSolver {
                             val vg_mt1 = vG - vMT1
                             val vmt2_mt1 = vMT2 - vMT1
 
+                            val p = SpiceParameters(comp.valueStr)
+                            val vgt = p.getDouble("vtrigger", p.getDouble("vgt", 0.7))
+                            val vhold = p.getDouble("vholding", p.getDouble("vhold", 0.1))
+
                             val latched = triacLatched[comp.id] ?: false
-                            if (!latched && abs(vg_mt1) > 0.7 && abs(vmt2_mt1) > 0.5) {
+                            if (!latched && abs(vg_mt1) > vgt && abs(vmt2_mt1) > 0.5) {
                                 triacLatched[comp.id] = true
                                 allDevicesConverged = false
-                            } else if (latched && abs(vmt2_mt1) < 0.1) {
+                            } else if (latched && abs(vmt2_mt1) < vhold) {
                                 triacLatched[comp.id] = false
                                 allDevicesConverged = false
                             }
